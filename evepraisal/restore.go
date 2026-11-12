@@ -58,6 +58,8 @@ func restoreMain() {
 		}
 	}()
 
+	// skipped counts appraisals whose ID the database already holds (409 from /restore).
+	skipped := 0
 	saver := func(appraisal *evepraisal.Appraisal) error {
 		var (
 			buf bytes.Buffer
@@ -81,7 +83,9 @@ func restoreMain() {
 		if err != nil {
 			return err
 		}
-		if resp.StatusCode != 200 {
+		if resp.StatusCode == http.StatusConflict {
+			skipped++
+		} else if resp.StatusCode != http.StatusOK {
 			var body []byte
 			body, err = io.ReadAll(resp.Body)
 			if err != nil {
@@ -94,11 +98,12 @@ func restoreMain() {
 	}
 
 	for _, filename := range filenames {
+		skipped = 0
 		log.Printf("Start restoring: %s", filename)
 		err := legacy.RestoreLegacyFile(saver, restoreTypeDB, filename)
 		if err != nil {
 			log.Fatalf("Error while importing legacy file: %s", err)
 		}
-		log.Printf("Done restoring: %s", filename)
+		log.Printf("Done restoring: %s skipped_existing=%d", filename, skipped)
 	}
 }

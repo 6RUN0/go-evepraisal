@@ -37,6 +37,8 @@ type AppraisalDB interface {
 var (
 	// ErrAppraisalNotFound is returned whenever an appraisal by a given ID can't be found
 	ErrAppraisalNotFound = errors.New("Appraisal not found")
+	// ErrAppraisalExists is returned when an appraisal is stored under an explicit ID that is already taken
+	ErrAppraisalExists = errors.New("Appraisal already exists")
 )
 
 // PriceDB holds prices for eve online items. Something else should update them

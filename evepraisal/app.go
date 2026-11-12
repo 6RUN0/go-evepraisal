@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -188,6 +189,9 @@ func appMain() {
 	webContext.ExtraJS = viper.GetString("extra-js")
 	webContext.AdBlock = viper.GetString("ad-block")
 	webContext.ExtraStaticFilePath = viper.GetString("extra-static-file-path")
+	if err := webContext.ValidateExtraStaticFilePath(); err != nil {
+		log.Fatalf("Invalid config: %s", err)
+	}
 	webContext.SiteName = viper.GetString("site-name")
 	webContext.SourceURL = strings.TrimSuffix(viper.GetString("source-url"), "/")
 	webContext.AboutContactsHTML = template.HTML(viper.GetString("about-contacts-html"))
@@ -199,13 +203,11 @@ func appMain() {
 		}
 		_ = favicon.Close()
 	}
-	if viper.GetString("cookie-auth-key") != "" {
-		webContext.CookieStore = sessions.NewCookieStore(
-			[]byte(viper.GetString("cookie-auth-key")),
-			[]byte(viper.GetString("cookie-encryption-key")))
-	} else {
-		webContext.CookieStore = sessions.NewCookieStore(securecookie.GenerateRandomKey(32))
+	cookieStore, err := newCookieStore(viper.GetString("cookie-auth-key"), viper.GetString("cookie-encryption-key"))
+	if err != nil {
+		log.Fatalf("Invalid config: %s", err)
 	}
+	webContext.CookieStore = cookieStore
 	if viper.GetString("sso-client-id") != "" {
 		webContext.OauthConfig = &oauth2.Config{
 			ClientID:     viper.GetString("sso-client-id"),
@@ -372,3 +374,18 @@ func NewRoundTripper(newrelicApp *newrelic.Application, original http.RoundTripp
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// newCookieStore builds the session store. An empty encryptionKey means signed
+// but unencrypted cookies: a non-nil empty block key would be a zero-length AES key.
+func newCookieStore(authKey, encryptionKey string) (*sessions.CookieStore, error) {
+	if authKey == "" {
+		return sessions.NewCookieStore(securecookie.GenerateRandomKey(32)), nil
+	}
+	switch len(encryptionKey) {
+	case 0:
+		return sessions.NewCookieStore([]byte(authKey)), nil
+	case 16, 24, 32:
+		return sessions.NewCookieStore([]byte(authKey), []byte(encryptionKey)), nil
+	}
+	return nil, fmt.Errorf("cookie-encryption-key must be empty or 16, 24 or 32 bytes, got %d", len(encryptionKey))
+}

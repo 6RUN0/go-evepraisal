@@ -1,7 +1,10 @@
 package web
 
 import (
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"net/http"
@@ -137,27 +140,23 @@ func (ctx *Context) HTTPHandler() http.Handler {
 	router.PostFunc("/a/delete/#appraisalID^[a-zA-Z0-9]+$", ctx.authWrapper(ctx.HandleDeleteAppraisal))
 
 	if ctx.ExtraStaticFilePath != "" {
-		err := filepath.Walk(ctx.ExtraStaticFilePath,
-			func(path string, info os.FileInfo, err error) error {
-				if !info.IsDir() {
-					httpPath := strings.TrimPrefix(path, ctx.ExtraStaticFilePath)
-					log.Printf("Adding %s as %s", path, httpPath)
-					body, err := os.ReadFile(path)
-					if err != nil {
-						log.Printf("ERROR: not able to read static file: %s", err)
-						return nil
-					}
-					router.GetFunc(
-						httpPath,
-						func(w http.ResponseWriter, r *http.Request) {
-							r.Header["Content-Type"] = []string{mime.TypeByExtension(filepath.Ext(path))}
-							_, _ = w.Write(body)
-						})
-				}
-				return nil
-			})
+		files, err := extraStaticFiles(ctx.ExtraStaticFilePath)
 		if err != nil {
 			log.Println(err)
+		}
+		for httpPath, path := range files {
+			log.Printf("Adding %s as %s", path, httpPath)
+			body, err := os.ReadFile(path)
+			if err != nil {
+				log.Printf("ERROR: not able to read static file: %s", err)
+				continue
+			}
+			router.GetFunc(
+				httpPath,
+				func(w http.ResponseWriter, r *http.Request) {
+					r.Header["Content-Type"] = []string{mime.TypeByExtension(filepath.Ext(path))}
+					_, _ = w.Write(body)
+				})
 		}
 	}
 
@@ -241,4 +240,50 @@ func (ctx *Context) HTTPHandler() http.Handler {
 	handler = gziphandler.GzipHandler(handler)
 
 	return handler
+}
+
+// ValidateExtraStaticFilePath fails when extra-static-file-path is set but unusable.
+func (ctx *Context) ValidateExtraStaticFilePath() error {
+	if ctx.ExtraStaticFilePath == "" {
+		return nil
+	}
+	_, err := extraStaticFiles(ctx.ExtraStaticFilePath)
+	return err
+}
+
+// extraStaticFiles maps the route of every regular file under root to its path.
+// The root is resolved first: a trailing slash would eat the leading slash of
+// every route, and WalkDir does not descend into a symlinked root.
+func extraStaticFiles(root string) (map[string]string, error) {
+	files := map[string]string{}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return files, fmt.Errorf("extra-static-file-path %q: %w", filepath.Clean(root), err)
+	}
+	root = resolved
+	info, err := os.Stat(root)
+	if err == nil && !info.IsDir() {
+		err = errors.New("not a directory")
+	}
+	if err != nil {
+		return files, fmt.Errorf("extra-static-file-path %q: %w", root, err)
+	}
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files["/"+filepath.ToSlash(rel)] = path
+		return nil
+	})
+	if err != nil {
+		return files, fmt.Errorf("extra-static-file-path %q: %w", root, err)
+	}
+	return files, nil
 }

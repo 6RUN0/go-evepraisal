@@ -92,10 +92,10 @@ func removeStaleTypeDBs(dbPath, keepPath string) error {
 	return removeTypeDBEntries(dbPath, func(name string) bool { return !keep[name] })
 }
 
-// removePartialTypeDBs removes builds left unfinished by a killed process.
+// removePartialTypeDBs removes builds and downloads left unfinished by a killed process.
 func removePartialTypeDBs(dbPath string) error {
 	return removeTypeDBEntries(dbPath, func(name string) bool {
-		return strings.Contains(name, typeDBPartial)
+		return strings.Contains(name, typeDBPartial) || strings.HasSuffix(name, typeDBDownloadPart)
 	})
 }
 

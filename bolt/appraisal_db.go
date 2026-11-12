@@ -123,6 +123,15 @@ func (db *AppraisalDB) PutNewAppraisal(appraisal *evepraisal.Appraisal) error {
 			if err != nil {
 				return err
 			}
+			if byIDBucket.Get(dbID) != nil {
+				return evepraisal.ErrAppraisalExists
+			}
+			// Imported IDs share the counter's ID space; keep NextSequence past them.
+			if n := binary.BigEndian.Uint64(dbID); n > byIDBucket.Sequence() {
+				if err = byIDBucket.SetSequence(n); err != nil {
+					return err
+				}
+			}
 		}
 		var buf bytes.Buffer
 		encoder := gob.NewEncoder(&buf)

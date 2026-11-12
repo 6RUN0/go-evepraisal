@@ -4,9 +4,12 @@ package management
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"expvar"
+	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/boltdb/bolt"
@@ -32,6 +35,10 @@ func (ctx *Context) HandleRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = ctx.App.AppraisalDB.PutNewAppraisal(&appraisal)
+	if errors.Is(err, evepraisal.ErrAppraisalExists) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -66,24 +73,45 @@ func (ctx *Context) HandleBackupToFile(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	f, err := os.OpenFile(ctx.AppraisalBackupPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-	defer f.Close()
-
-	cf, err := gzip.NewWriterLevel(f, gzip.BestCompression)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-
-	err = db.DB.View(func(tx *bolt.Tx) error {
-		return tx.Copy(cf)
+	err := writeBackup(ctx.AppraisalBackupPath, func(w io.Writer) error {
+		return db.DB.View(func(tx *bolt.Tx) error {
+			return tx.Copy(w)
+		})
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// writeBackup gzips what write produces into a temp file next to path and
+// renames it over path only on success, so a failed run keeps the last good backup.
+func writeBackup(path string, write func(io.Writer) error) (err error) {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+		}
+	}()
+
+	zw, err := gzip.NewWriterLevel(f, gzip.BestCompression)
+	if err != nil {
+		return err
+	}
+	if err = write(zw); err != nil {
+		return err
+	}
+	if err = zw.Close(); err != nil {
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // HTTPHandler returns the http.Handler for the web management api

@@ -198,3 +198,20 @@ func TestRemoveStaleTypeDBsContinuesOnError(t *testing.T) {
 	assertMissing(t, filepath.Join(dir, "types-100"), filepath.Join(dir, "types-deadbeef"))
 	assertExists(t, keep, keep+".index")
 }
+
+// TestRemovePartialTypeDBsRemovesKilledDownload pins the leftover
+// types-N.zip.download of a killed download: it was never cleaned up on start.
+func TestRemovePartialTypeDBsRemovesKilledDownload(t *testing.T) {
+	dir := t.TempDir()
+	download := filepath.Join(dir, "types-"+testBuild+".zip.download")
+	partial := filepath.Join(dir, "types-"+testBuild+".partial")
+	ready := makeReadyTypeDB(t, dir, "types-1")
+	touchFile(t, download)
+	touchFile(t, partial)
+
+	if err := removePartialTypeDBs(dir); err != nil {
+		t.Fatalf("removePartialTypeDBs: %v", err)
+	}
+	assertMissing(t, download, partial)
+	assertExists(t, ready, ready+typeDBIndexSuffix)
+}
