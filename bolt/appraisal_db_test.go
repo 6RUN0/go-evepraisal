@@ -2,9 +2,12 @@ package bolt
 
 import (
 	"errors"
+	"math"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/boltdb/bolt"
 	"github.com/evepraisal/go-evepraisal"
 )
 
@@ -70,5 +73,113 @@ func TestPutNewAppraisalRejectsExistingID(t *testing.T) {
 	}
 	if got.Raw != "original" {
 		t.Fatalf("stored appraisal Raw = %q, want %q", got.Raw, "original")
+	}
+}
+
+func setAppraisalSequence(t *testing.T, db evepraisal.AppraisalDB, seq uint64) {
+	t.Helper()
+	err := db.(*AppraisalDB).DB.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("appraisals")).SetSequence(seq)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireRaw(t *testing.T, db evepraisal.AppraisalDB, id, want string) {
+	t.Helper()
+	got, err := db.GetAppraisal(id, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Raw != want {
+		t.Fatalf("appraisal %q Raw = %q, want %q", id, got.Raw, want)
+	}
+}
+
+// TestNewAppraisalDBRaisesSequenceToStoredKeys pins volumes restored without
+// the import counter bump: the next new appraisal reused a stored ID.
+func TestNewAppraisalDBRaisesSequenceToStoredKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "appraisals")
+	raw, err := bolt.Open(path, 0600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = raw.Update(func(tx *bolt.Tx) error {
+		b, cerr := tx.CreateBucket([]byte("appraisals"))
+		if cerr != nil {
+			return cerr
+		}
+		return b.Put(EncodeDBIDFromUint64(100), []byte("stored"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := NewAppraisalDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	fresh := &evepraisal.Appraisal{Kind: "test", Raw: "new"}
+	if err := db.PutNewAppraisal(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if got := evepraisal.AppraisalIDToUint64(fresh.ID); got != 101 {
+		t.Fatalf("new appraisal ID = %q (%d), want 101", fresh.ID, got)
+	}
+}
+
+// TestPutNewAppraisalRefusesTakenSequenceID pins the silent overwrite of a
+// stored appraisal when the counter lags behind the stored keys.
+func TestPutNewAppraisalRefusesTakenSequenceID(t *testing.T) {
+	db := newTestAppraisalDB(t)
+	if err := importAppraisal(t, db, 5, "imported 5"); err != nil {
+		t.Fatal(err)
+	}
+	setAppraisalSequence(t, db, 4)
+
+	err := db.PutNewAppraisal(&evepraisal.Appraisal{Kind: "test", Raw: "new"})
+	if !errors.Is(err, errAppraisalSequenceBehind) {
+		t.Fatalf("err = %v, want errAppraisalSequenceBehind", err)
+	}
+	requireRaw(t, db, evepraisal.Uint64ToAppraisalID(5), "imported 5")
+}
+
+// TestPutNewAppraisalRejectsImportNearMaxUint64 pins the counter wrap: an
+// imported ID near MaxUint64 raised the sequence, and NextSequence went to 0.
+func TestPutNewAppraisalRejectsImportNearMaxUint64(t *testing.T) {
+	db := newTestAppraisalDB(t)
+	stored := &evepraisal.Appraisal{Kind: "test", Raw: "original"}
+	if err := db.PutNewAppraisal(stored); err != nil {
+		t.Fatal(err)
+	}
+
+	err := importAppraisal(t, db, math.MaxUint64-1, "imported")
+	if !errors.Is(err, errImportedIDOutOfRange) {
+		t.Fatalf("err = %v, want errImportedIDOutOfRange", err)
+	}
+	fresh := &evepraisal.Appraisal{Kind: "test", Raw: "new"}
+	if err := db.PutNewAppraisal(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if got := evepraisal.AppraisalIDToUint64(fresh.ID); got != 2 {
+		t.Fatalf("new appraisal ID = %q (%d), want 2", fresh.ID, got)
+	}
+	requireRaw(t, db, stored.ID, "original")
+}
+
+// TestPutNewAppraisalRefusesSequenceWrap pins NextSequence wrapping from
+// MaxUint64 to 0, which handed out the oldest IDs again.
+func TestPutNewAppraisalRefusesSequenceWrap(t *testing.T) {
+	db := newTestAppraisalDB(t)
+	setAppraisalSequence(t, db, math.MaxUint64)
+
+	err := db.PutNewAppraisal(&evepraisal.Appraisal{Kind: "test", Raw: "new"})
+	if !errors.Is(err, errAppraisalSequenceOverflow) {
+		t.Fatalf("err = %v, want errAppraisalSequenceOverflow", err)
 	}
 }

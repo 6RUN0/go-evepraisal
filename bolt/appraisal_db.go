@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,17 @@ import (
 	"github.com/boltdb/bolt"
 	"github.com/evepraisal/go-evepraisal"
 	"github.com/golang/snappy"
+)
+
+// maxImportedAppraisalID caps imported IDs: the counter is raised to the highest
+// one, and 1<<62 still leaves 3<<62 new IDs before NextSequence would wrap. Legacy
+// IDs are small; base36 IDs of 13 characters overflow uint64 to arbitrary values.
+const maxImportedAppraisalID = 1 << 62
+
+var (
+	errAppraisalSequenceOverflow = errors.New("appraisal ID sequence overflow")
+	errAppraisalSequenceBehind   = errors.New("appraisal ID sequence behind stored keys")
+	errImportedIDOutOfRange      = errors.New("imported appraisal ID out of range")
 )
 
 var expireCheckDuration = time.Hour * 24 * 80
@@ -58,7 +70,18 @@ func NewAppraisalDB(filename string) (evepraisal.AppraisalDB, error) {
 		} else if err != bolt.ErrBucketExists {
 			return err
 		}
-		totalAppraisals = tx.Bucket([]byte("appraisals")).Sequence()
+		b = tx.Bucket([]byte("appraisals"))
+		// A volume restored by a build without the import counter bump keeps a
+		// sequence below its stored IDs; NextSequence would hand those IDs out again.
+		if k, _ := b.Cursor().Last(); len(k) == 8 {
+			if n := binary.BigEndian.Uint64(k); n > b.Sequence() {
+				log.Printf("Appraisal sequence raised to stored ID sequence=%d highest_id=%d", b.Sequence(), n)
+				if err = b.SetSequence(n); err != nil {
+					return fmt.Errorf("raise appraisal bucket sequence: %s", err)
+				}
+			}
+		}
+		totalAppraisals = b.Sequence()
 
 		_, err = tx.CreateBucket([]byte("appraisals-last-used"))
 		if err != nil && err != bolt.ErrBucketExists {
@@ -112,8 +135,15 @@ func (db *AppraisalDB) PutNewAppraisal(appraisal *evepraisal.Appraisal) error {
 			if err != nil {
 				return err
 			}
+			// NextSequence wraps from MaxUint64 to 0 and would walk over the oldest IDs.
+			if id == 0 {
+				return errAppraisalSequenceOverflow
+			}
 
 			dbID = EncodeDBIDFromUint64(id)
+			if byIDBucket.Get(dbID) != nil {
+				return fmt.Errorf("%w: id %d is taken", errAppraisalSequenceBehind, id)
+			}
 			appraisal.ID, err = DecodeDBID(dbID)
 			if err != nil {
 				return err
@@ -126,8 +156,12 @@ func (db *AppraisalDB) PutNewAppraisal(appraisal *evepraisal.Appraisal) error {
 			if byIDBucket.Get(dbID) != nil {
 				return evepraisal.ErrAppraisalExists
 			}
+			n := binary.BigEndian.Uint64(dbID)
+			if n > maxImportedAppraisalID {
+				return fmt.Errorf("%w: %q", errImportedIDOutOfRange, appraisal.ID)
+			}
 			// Imported IDs share the counter's ID space; keep NextSequence past them.
-			if n := binary.BigEndian.Uint64(dbID); n > byIDBucket.Sequence() {
+			if n > byIDBucket.Sequence() {
 				if err = byIDBucket.SetSequence(n); err != nil {
 					return err
 				}

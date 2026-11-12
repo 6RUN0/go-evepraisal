@@ -123,3 +123,10 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   counter moves past every imported ID; a new appraisal could take an
   imported ID and replace it. A repeated import no longer raises the
   appraisal total.
+- A new appraisal never replaces a stored one. On start the ID counter is
+  raised to the highest stored ID, which repairs volumes restored by an
+  earlier build (logged as `Appraisal sequence raised to stored ID`); a
+  counter that still lands on a taken ID fails the save with
+  `appraisal ID sequence behind stored keys`. An imported ID above `2^62`
+  is rejected (`imported appraisal ID out of range`), so the counter cannot
+  wrap to 0.
