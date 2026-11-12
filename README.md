@@ -84,14 +84,22 @@ docker compose up -d
 | Tag | Points to | Changes |
 | --- | --- | --- |
 | `X.Y.Z` | release tag `vX.Y.Z` | never |
-| `X.Y` | newest `X.Y.*` release | on each patch release |
-| `latest` | newest release | on each release |
+| `X.Y` | most recently pushed `vX.Y.*` tag | on each patch release |
+| `latest` | highest released version | when a higher version is released |
 | `edge` | newest commit on `master`, not a release | on every push to `master` |
 | `sha-<commit>` | that `master` commit (7-character short SHA) | never |
 
-An image is pushed only after `make check` passes on that commit. `edge`
-carries unreleased commits; pin an `X.Y.Z` tag in production (`1.2.3` above
-is an example).
+An image is pushed only after `make check` passes on that commit. A release
+is a tag of the form `vX.Y.Z` (digits only, no suffix) on a commit of
+`master`: other tags start no build, and a matching tag on a commit outside
+`master` fails the build before anything is pushed. Releasing a patch of an
+older line (`v1.2.5` after `v1.3.0`) moves `1.2` but not `latest`. Who may
+push or move `v*` tags is set by a tag ruleset in the repository settings on
+GitHub (Settings, Rules, Rulesets); without one, anyone with write access can
+release.
+
+`edge` carries unreleased commits; pin an `X.Y.Z` tag in production (`1.2.3`
+above is an example).
 
 Verify that an image was built by this repository's CI from the source it
 names (needs the GitHub CLI):
