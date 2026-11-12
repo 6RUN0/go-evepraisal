@@ -387,7 +387,7 @@ func (app *App) PopulateItems(appraisal *Appraisal) {
 		if appraisal.Items[i].TypeID != 0 {
 			t, ok = app.TypeDB.GetTypeByID(appraisal.Items[i].TypeID)
 			if !ok {
-				log.Printf("WARN: item type ID not found in database: %q", appraisal.Items[i].TypeID)
+				log.Printf("WARN: item type ID not found in database: %d", appraisal.Items[i].TypeID)
 				continue
 			}
 		} else {

@@ -28,8 +28,6 @@
 !/user.go
 !/go.mod
 !/go.sum
-!/Gopkg.lock
-!/Gopkg.toml
 !/Dockerfile
 !/docker-compose.yml
 !/evepraisal.toml
