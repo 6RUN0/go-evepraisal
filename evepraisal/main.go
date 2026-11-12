@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"os"
-	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/viper"
 )
@@ -16,9 +13,11 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	configureEnv()
 	if err := readConfig(viper.GetViper(), "/etc/evepraisal/", "."); err != nil {
 		log.Fatalf("Invalid config file: %s", err)
+	}
+	if err := configureEnv(viper.GetViper()); err != nil {
+		log.Fatalf("Invalid environment: %s", err)
 	}
 
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
@@ -26,27 +25,7 @@ func main() {
 		return
 	}
 
-	var err error
-	buf := bytes.NewBufferString("Config settings\n")
-	w := tabwriter.NewWriter(buf, 0, 0, 1, ' ', 0)
-	for k, v := range viper.AllSettings() {
-		if strings.Contains(k, "key") || strings.Contains(k, "secret") {
-			_, err = fmt.Fprintf(w, "\t%s\tMASKED\n", k)
-			if err != nil {
-				log.Fatal(err)
-			}
-		} else {
-			_, err = fmt.Fprintf(w, "\t%s\t%#v\n", k, v)
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-	}
-	err = w.Flush()
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Println(buf.String())
+	log.Println(buildSettingsLog(viper.GetViper()))
 
 	// Check for our subcommands
 	if len(os.Args) > 1 {

@@ -76,6 +76,19 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   every push to `master`. Each image carries an
   SBOM and a provenance attestation, verifiable with `gh attestation verify`;
   see "Published image" in `README.md`.
+- Portable environment variable names: `EVEPRAISAL_` plus the key
+  upper-cased with `-` replaced by `_` (`EVEPRAISAL_BASE_URL`), which a POSIX
+  shell can `export`. The names with `-` (`EVEPRAISAL_BASE-URL`) still work;
+  both set to different values stop the start with `Invalid environment`.
+- `<variable>_FILE` reads a key from a file, for Docker or compose secrets
+  (`EVEPRAISAL_COOKIE_AUTH_KEY_FILE=/run/secrets/cookie_auth_key`); one
+  trailing line ending is removed. A variable and its `_FILE` both set, or an
+  unreadable file, stop the start. See "Environment variables" in
+  `README.md`.
+- The startup settings log lists keys set only through the environment too,
+  in key order; `cookie-auth-key`, `cookie-encryption-key`,
+  `sso-client-secret` and `newrelic_license-key` appear as `<set>` or
+  `<unset>` instead of `MASKED`.
 
 ### Fixed
 

@@ -47,7 +47,10 @@ func TestMarketFetchIntervalFromInt(t *testing.T) {
 
 func TestMarketFetchIntervalFromEnv(t *testing.T) {
 	t.Setenv("EVEPRAISAL_MARKET-FETCH-INTERVAL", "10")
-	configureEnv()
+	t.Cleanup(func() { viper.Set("market-fetch-interval", nil) })
+	if err := configureEnv(viper.GetViper()); err != nil {
+		t.Fatal(err)
+	}
 	got, err := marketFetchInterval()
 	if err != nil || got != 10*time.Minute {
 		t.Errorf("marketFetchInterval() = %v, %v, want 10m", got, err)

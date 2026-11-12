@@ -47,6 +47,15 @@ gets `!/<name>` (`!/<name>/` for a directory), and absent from the image until
 `.dockerignore` gets it too. After editing either file,
 `git ls-files | git check-ignore --stdin --no-index` must print nothing.
 
+## Config keys
+
+Environment variables exist only for keys in `configKeys`
+(`evepraisal/env_config.go`); viper's `AutomaticEnv` is not used. A new key
+needs a row there and in the README key table, otherwise
+`TestConfigKeysCoverViperReads` or `TestReadmeListsEnvNames` fails. The scan
+sees only string literals passed to `viper.Get*`/`SetDefault`: a key built at
+run time escapes it and silently has no environment variable.
+
 ## Verbatim test data
 
 `staticdump/testdata/*.jsonl` are lines copied verbatim from SDE build

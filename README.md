@@ -201,54 +201,113 @@ logs `No config file found, using defaults searched_paths=["/etc/evepraisal/" ".
 Any other problem with the file (a syntax error, no read permission) stops
 the start with `Invalid config file: <path>: <reason>`.
 
-On start the service logs the keys that have a default or appear in the
-file; values of keys whose name contains `key` or `secret` are printed as
-`MASKED`. Keys set only through the environment and without a default
-(`cookie-*`, `sso-client-*`) are not listed.
+On start the service logs every key that has a default or is set in the
+file or the environment, in key order. The values of `cookie-auth-key`,
+`cookie-encryption-key`, `sso-client-secret` and `newrelic_license-key` are
+printed as `<set>` or `<unset>`, never in clear.
 
-Each key can also be set through the environment: upper-case it, prefix
-`EVEPRAISAL_`, keep `-` and `_` as they are. `base-url` becomes
-`EVEPRAISAL_BASE-URL`, `db_path` becomes `EVEPRAISAL_DB_PATH`. The
-environment overrides the file. An empty variable counts as unset: the file
-or the default applies. A list value is space-separated:
-`EVEPRAISAL_HTTPS_DOMAIN-WHITELIST="example.org www.example.org"`. A shell
-`export` rejects names with `-`; set them in the compose `environment:` list
-or with `env 'EVEPRAISAL_BASE-URL=https://example.org' evepraisal`.
+### Environment variables
+
+Each key can also be set through the environment. The variable name is the
+key upper-cased with `-` replaced by `_` and prefixed with `EVEPRAISAL_`:
+`base-url` becomes `EVEPRAISAL_BASE_URL`, `db_path` becomes
+`EVEPRAISAL_DB_PATH`. The table below lists every name.
+
+- **Legacy names.** The key upper-cased with `-` kept
+  (`EVEPRAISAL_BASE-URL`) is still read. If both names are set to different
+  values the start stops with `Invalid environment: EVEPRAISAL_BASE_URL and
+  EVEPRAISAL_BASE-URL are both set with different values; set only
+  EVEPRAISAL_BASE_URL`; the same value under both names is accepted.
+- **Files.** `<variable>_FILE` (`EVEPRAISAL_COOKIE_AUTH_KEY_FILE`) names a
+  file whose content is the value, for Docker or compose secrets. The file is
+  read once at start; exactly one trailing line ending (`\n` or `\r\n`) is
+  removed, nothing else, so an empty file sets the key to an empty string.
+  Only the portable name takes `_FILE`; `EVEPRAISAL_BASE-URL_FILE` is
+  ignored. A variable and its `_FILE` both set stops the start with
+  `Invalid environment: <variable> and <variable>_FILE are both set; set only
+  one`. A missing or unreadable file stops it with
+  `Invalid environment: <key>: read <variable>_FILE: open <path>: <reason>`;
+  the content is never printed.
+- **Precedence.** A variable or its `_FILE` overrides the config file, the
+  config file overrides the default. An empty variable (`EVEPRAISAL_X=` or
+  `EVEPRAISAL_X_FILE=`) counts as unset: the file or the default applies.
+- **Types.** Values parse as in the file: `true`/`false` for
+  `http_redirect`, a whole number for `market-fetch-interval`, and a
+  space-separated list for `https_domain-whitelist`:
+  `EVEPRAISAL_HTTPS_DOMAIN_WHITELIST="example.org www.example.org"`. The same
+  holds for the content of a `_FILE`.
+
+The image sets `EVEPRAISAL_DB_PATH` and `EVEPRAISAL_BACKUP_PATH`, so
+`EVEPRAISAL_DB_PATH_FILE` and `EVEPRAISAL_BACKUP_PATH_FILE` stop the start
+inside it; override the plain variables instead.
+
+Compose secrets keep the cookie keys and the SSO secret out of the config
+file and out of `docker inspect`. Compose mounts each one read-only at
+`/run/secrets/<name>`, which works with the read-only root filesystem. Put
+this into `docker-compose.override.yml` next to `docker-compose.yml`, with
+the files under `./secrets/` readable by UID 65532 (`chmod 0444` or
+`sudo chown 65532`):
+
+```yaml
+services:
+  evepraisal:
+    environment:
+      EVEPRAISAL_COOKIE_AUTH_KEY_FILE: /run/secrets/cookie_auth_key
+      EVEPRAISAL_COOKIE_ENCRYPTION_KEY_FILE: /run/secrets/cookie_encryption_key
+      EVEPRAISAL_SSO_CLIENT_ID: your-client-id
+      EVEPRAISAL_SSO_CLIENT_SECRET_FILE: /run/secrets/sso_client_secret
+    secrets: [cookie_auth_key, cookie_encryption_key, sso_client_secret]
+secrets:
+  cookie_auth_key:
+    file: ./secrets/cookie_auth_key
+  cookie_encryption_key:
+    file: ./secrets/cookie_encryption_key
+  sso_client_secret:
+    file: ./secrets/sso_client_secret
+```
+
+Generate the cookie keys once and keep them: a new `cookie_auth_key` logs
+every user out. `openssl rand -hex 32 > secrets/cookie_auth_key` and
+`openssl rand -hex 16 > secrets/cookie_encryption_key` write 64 and 32
+characters plus a newline; the newline is removed on read, so the
+encryption key is 32 bytes.
+
+### Keys
 
 All values are read once at start; a change needs a restart. The table
-follows `evepraisal/config.go` and the `viper.Get*` calls; re-check it when a
-key is added there.
+follows `configKeys` in `evepraisal/env_config.go`; a test fails when a key
+read through viper is missing there or a row is missing here.
 
-| Key | Default | Effect |
-| --- | --- | --- |
-| `base-url` | `http://127.0.0.1:8080` | Public URL of the site; used for links and the SSO callback `<base-url>/oauthcallback` |
-| `http_addr` | `:8080` | Listen address of the HTTP server; empty disables it, and then `healthcheck` always fails |
-| `http_redirect` | `false` | `true` answers every HTTP request with a 307 to the same host and path on `https://`; only for `https_addr`, never behind a TLS-terminating proxy |
-| `https_addr` | empty | Listen address of the HTTPS server with Let's Encrypt certificates; empty disables HTTPS; see [HTTPS without a proxy](#https-without-a-proxy) |
-| `https_domain-whitelist` | `["evepraisal.com"]` | Domains for which certificates are requested |
-| `letsencrypt_email` | empty | Contact e-mail for Let's Encrypt |
-| `db_path` | `db/` (`/data/db/` in the image) | Directory of the databases, created on start |
-| `backup_path` | `db/backups/` (`/data/db/backups/` in the image) | Directory of `appraisals.gz` written by the management API, created on start |
-| `esi_baseurl` | `https://esi.evetech.net` | ESI base URL; one trailing `/latest`, `/v1` or `/legacy` is stripped with a `WARN` log line |
-| `market-fetch-interval` | `30` | Minutes between the starts of two market price refreshes, a whole number above zero. Anything else in the file (`0`, `-5`, `10m`, `1.5`, `""`) stops the start with `Invalid config: market-fetch-interval must be a whole number of minutes above zero, got "<value>"` |
-| `management_addr` | `127.0.0.1:8090` | Listen address of the management API, see [Management API](#management-api) |
-| `newrelic_app-name` | `Evepraisal` | New Relic application name |
-| `newrelic_license-key` | empty | New Relic license key; empty disables New Relic |
-| `site-name` | `Evepraisal` | Site name in the navbar and page titles |
-| `source-url` | `https://github.com/evepraisal/go-evepraisal` | Source repository; the footer links to it and to its `/issues` |
-| `about-contacts-html` | the four upstream contact items | HTML of the contact list on `/about`, inserted unescaped |
-| `favicon-path` | empty | File served at `/favicon.ico`; empty serves the built-in icon; an unreadable file stops the start |
-| `extra-html-header` | empty | HTML added to the page head |
-| `extra-js` | empty | JavaScript added to every page |
-| `ad-block` | empty | HTML of the ad block |
-| `extra-static-file-path` | empty | Directory of extra files, each served at its path relative to the directory (`<dir>/a/b.txt` at `/a/b.txt`). A symlink to a directory is followed. A missing path, a file instead of a directory, or any error walking the tree (such as an unreadable subdirectory) stops the start with `Invalid config: extra-static-file-path "<path>": <reason>`. Files are read into memory on start; files added later are not served until a restart |
-| `cookie-auth-key` | empty | Session cookie signing key; empty generates a random key on every start, which logs every user out on restart |
-| `cookie-encryption-key` | empty | Session cookie encryption key, used only with `cookie-auth-key`: empty means signed but unencrypted cookies, otherwise 16, 24 or 32 bytes (AES); another length stops the start with `Invalid config: cookie-encryption-key must be empty or 16, 24 or 32 bytes, got <n>` |
-| `sso-client-id` | empty | EVE SSO client ID; empty disables login: `/login` answers `SSO is not configured` |
-| `sso-client-secret` | empty | EVE SSO client secret |
-| `sso-authorize-url` | `https://login.eveonline.com/oauth/authorize` | SSO authorize endpoint |
-| `sso-token-url` | `https://login.eveonline.com/oauth/token` | SSO token endpoint |
-| `sso-verify-url` | `https://login.eveonline.com/oauth/verify` | SSO verify endpoint |
+| Key | Environment variable | Default | Effect |
+| --- | --- | --- | --- |
+| `base-url` | `EVEPRAISAL_BASE_URL` | `http://127.0.0.1:8080` | Public URL of the site; used for links and the SSO callback `<base-url>/oauthcallback` |
+| `http_addr` | `EVEPRAISAL_HTTP_ADDR` | `:8080` | Listen address of the HTTP server; empty disables it, and then `healthcheck` always fails |
+| `http_redirect` | `EVEPRAISAL_HTTP_REDIRECT` | `false` | `true` answers every HTTP request with a 307 to the same host and path on `https://`; only for `https_addr`, never behind a TLS-terminating proxy |
+| `https_addr` | `EVEPRAISAL_HTTPS_ADDR` | empty | Listen address of the HTTPS server with Let's Encrypt certificates; empty disables HTTPS; see [HTTPS without a proxy](#https-without-a-proxy) |
+| `https_domain-whitelist` | `EVEPRAISAL_HTTPS_DOMAIN_WHITELIST` | `["evepraisal.com"]` | Domains for which certificates are requested |
+| `letsencrypt_email` | `EVEPRAISAL_LETSENCRYPT_EMAIL` | empty | Contact e-mail for Let's Encrypt |
+| `db_path` | `EVEPRAISAL_DB_PATH` | `db/` (`/data/db/` in the image) | Directory of the databases, created on start |
+| `backup_path` | `EVEPRAISAL_BACKUP_PATH` | `db/backups/` (`/data/db/backups/` in the image) | Directory of `appraisals.gz` written by the management API, created on start |
+| `esi_baseurl` | `EVEPRAISAL_ESI_BASEURL` | `https://esi.evetech.net` | ESI base URL; one trailing `/latest`, `/v1` or `/legacy` is stripped with a `WARN` log line |
+| `market-fetch-interval` | `EVEPRAISAL_MARKET_FETCH_INTERVAL` | `30` | Minutes between the starts of two market price refreshes, a whole number above zero. Anything else in the file (`0`, `-5`, `10m`, `1.5`, `""`) stops the start with `Invalid config: market-fetch-interval must be a whole number of minutes above zero, got "<value>"` |
+| `management_addr` | `EVEPRAISAL_MANAGEMENT_ADDR` | `127.0.0.1:8090` | Listen address of the management API, see [Management API](#management-api) |
+| `newrelic_app-name` | `EVEPRAISAL_NEWRELIC_APP_NAME` | `Evepraisal` | New Relic application name |
+| `newrelic_license-key` | `EVEPRAISAL_NEWRELIC_LICENSE_KEY` | empty | New Relic license key; empty disables New Relic |
+| `site-name` | `EVEPRAISAL_SITE_NAME` | `Evepraisal` | Site name in the navbar and page titles |
+| `source-url` | `EVEPRAISAL_SOURCE_URL` | `https://github.com/evepraisal/go-evepraisal` | Source repository; the footer links to it and to its `/issues` |
+| `about-contacts-html` | `EVEPRAISAL_ABOUT_CONTACTS_HTML` | the four upstream contact items | HTML of the contact list on `/about`, inserted unescaped |
+| `favicon-path` | `EVEPRAISAL_FAVICON_PATH` | empty | File served at `/favicon.ico`; empty serves the built-in icon; an unreadable file stops the start |
+| `extra-html-header` | `EVEPRAISAL_EXTRA_HTML_HEADER` | empty | HTML added to the page head |
+| `extra-js` | `EVEPRAISAL_EXTRA_JS` | empty | JavaScript added to every page |
+| `ad-block` | `EVEPRAISAL_AD_BLOCK` | empty | HTML of the ad block |
+| `extra-static-file-path` | `EVEPRAISAL_EXTRA_STATIC_FILE_PATH` | empty | Directory of extra files, each served at its path relative to the directory (`<dir>/a/b.txt` at `/a/b.txt`). A symlink to a directory is followed. A missing path, a file instead of a directory, or any error walking the tree (such as an unreadable subdirectory) stops the start with `Invalid config: extra-static-file-path "<path>": <reason>`. Files are read into memory on start; files added later are not served until a restart |
+| `cookie-auth-key` | `EVEPRAISAL_COOKIE_AUTH_KEY` | empty | Session cookie signing key; empty generates a random key on every start, which logs every user out on restart |
+| `cookie-encryption-key` | `EVEPRAISAL_COOKIE_ENCRYPTION_KEY` | empty | Session cookie encryption key, used only with `cookie-auth-key`: empty means signed but unencrypted cookies, otherwise 16, 24 or 32 bytes (AES); another length stops the start with `Invalid config: cookie-encryption-key must be empty or 16, 24 or 32 bytes, got <n>` |
+| `sso-client-id` | `EVEPRAISAL_SSO_CLIENT_ID` | empty | EVE SSO client ID; empty disables login: `/login` answers `SSO is not configured` |
+| `sso-client-secret` | `EVEPRAISAL_SSO_CLIENT_SECRET` | empty | EVE SSO client secret |
+| `sso-authorize-url` | `EVEPRAISAL_SSO_AUTHORIZE_URL` | `https://login.eveonline.com/oauth/authorize` | SSO authorize endpoint |
+| `sso-token-url` | `EVEPRAISAL_SSO_TOKEN_URL` | `https://login.eveonline.com/oauth/token` | SSO token endpoint |
+| `sso-verify-url` | `EVEPRAISAL_SSO_VERIFY_URL` | `https://login.eveonline.com/oauth/verify` | SSO verify endpoint |
 
 ## Data directory
 

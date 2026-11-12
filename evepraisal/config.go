@@ -39,12 +39,6 @@ func init() {
 
 }
 
-// configureEnv lets EVEPRAISAL_<KEY> environment variables override config keys.
-func configureEnv() {
-	viper.SetEnvPrefix("evepraisal")
-	viper.AutomaticEnv()
-}
-
 // marketFetchInterval returns market-fetch-interval, a whole number of minutes above zero.
 func marketFetchInterval() (time.Duration, error) {
 	raw := viper.GetString("market-fetch-interval")
