@@ -9,14 +9,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/evepraisal/go-evepraisal"
 	"github.com/evepraisal/go-evepraisal/legacy"
 	"github.com/evepraisal/go-evepraisal/staticdump"
-	"github.com/evepraisal/go-evepraisal/typedb"
-	"github.com/sethgrid/pester"
 	"github.com/spf13/viper"
 )
 
@@ -45,46 +41,20 @@ func restoreMain() {
 		}
 	}
 
-	var (
-		typeDBMu sync.Mutex
-		typeDB   typedb.TypeDB
-	)
-
-	staticdumpHTTPClient := pester.New()
-	staticdumpHTTPClient.Concurrency = 1
-	staticdumpHTTPClient.Timeout = 5 * time.Minute
-	staticdumpHTTPClient.Backoff = pester.ExponentialJitterBackoff
-	staticdumpHTTPClient.MaxRetries = 10
-	// The restore keeps the first DB it gets; a newer build fetched in the
-	// background meanwhile is closed unused and old DBs stay on disk.
-	staticFetcher, err := staticdump.NewStaticFetcher(staticdumpHTTPClient, viper.GetString("db_path"), false, func(newTypeDB typedb.TypeDB) {
-		typeDBMu.Lock()
-		defer typeDBMu.Unlock()
-		if typeDB != nil {
-			_ = newTypeDB.Close()
-			return
-		}
-		log.Println("Got new typedb", newTypeDB)
-		typeDB = newTypeDB
-	})
-	typeDBMu.Lock()
-	restoreTypeDB := typeDB
-	typeDBMu.Unlock()
-	log.Println("TypeDB", restoreTypeDB)
-	if err != nil {
-		log.Fatalf("Couldn't start static fetcher: %s", err)
+	if err := prepareDataDirs(viper.GetString("db_path"), viper.GetString("backup_path")); err != nil {
+		log.Fatalf("Couldn't create data directories: %s", err)
 	}
-	defer func() {
-		err := staticFetcher.Close()
-		if err != nil {
-			log.Fatalf("Problem closing static fetcher: %s", err)
-		}
 
-		if restoreTypeDB != nil {
-			err = restoreTypeDB.Close()
-			if err != nil {
-				log.Fatalf("Problem closing typeDB: %s", err)
-			}
+	// Restore runs next to the service (docker compose exec), so it only opens
+	// the service's ready type DB and never builds or removes type DBs itself.
+	restoreTypeDB, err := staticdump.OpenNewestTypeDB(viper.GetString("db_path"))
+	if err != nil {
+		log.Fatalf("Couldn't open type DB, start the service and wait for its first type DB: %s", err)
+	}
+	log.Println("TypeDB", restoreTypeDB)
+	defer func() {
+		if err := restoreTypeDB.Close(); err != nil {
+			log.Fatalf("Problem closing typeDB: %s", err)
 		}
 	}()
 

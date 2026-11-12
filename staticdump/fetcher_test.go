@@ -1,6 +1,7 @@
 package staticdump
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -330,4 +331,117 @@ func TestNewStaticFetcherRemovesPartialOnStart(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	assertCalls(t, rec)
+}
+
+// pauseRecorder replaces StaticFetcher.after: it records every pause and fires
+// at once until n pauses are recorded, then never fires and closes done.
+type pauseRecorder struct {
+	mu     sync.Mutex
+	pauses []time.Duration
+	n      int
+	done   chan struct{}
+}
+
+func newPauseRecorder(n int) *pauseRecorder {
+	return &pauseRecorder{n: n, done: make(chan struct{})}
+}
+
+func (r *pauseRecorder) after(d time.Duration) <-chan time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pauses = append(r.pauses, d)
+	if len(r.pauses) == r.n {
+		close(r.done)
+		return nil
+	}
+	fired := make(chan time.Time, 1)
+	fired <- time.Time{}
+	return fired
+}
+
+// runPauses starts f with rec as its timer and returns the recorded pauses.
+func runPauses(t *testing.T, f *StaticFetcher, rec *pauseRecorder) []time.Duration {
+	t.Helper()
+	f.after = rec.after
+	f.start()
+	select {
+	case <-rec.done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("fetcher did not reach the expected number of pauses")
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	return append([]time.Duration(nil), rec.pauses...)
+}
+
+func assertPauses(t *testing.T, got []time.Duration, want ...time.Duration) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("pauses = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("pauses = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestStaticFetcherRetriesFirstBuildWithBackoff pins that a failed first build
+// on an empty db_path is retried after 5 minutes, doubling up to 6 hours,
+// instead of leaving the site without a type DB for 6 hours.
+func TestStaticFetcherRetriesFirstBuildWithBackoff(t *testing.T) {
+	srv, _ := sdeServer(t, http.StatusServiceUnavailable, unexpectedArchive(t))
+	f := newTestFetcher(srv, t.TempDir(), newDBRecorder(t))
+
+	got := runPauses(t, f, newPauseRecorder(9))
+	assertPauses(t, got,
+		5*time.Minute, 10*time.Minute, 20*time.Minute, 40*time.Minute, 80*time.Minute,
+		160*time.Minute, 320*time.Minute, 6*time.Hour, 6*time.Hour)
+}
+
+// TestStaticFetcherRefreshesEverySixHoursOnceServing pins the regular refresh
+// interval while a type DB is served, even when the refresh itself fails.
+func TestStaticFetcherRefreshesEverySixHoursOnceServing(t *testing.T) {
+	dir := t.TempDir()
+	makeReadyTypeDB(t, dir, "types-100")
+	srv, _ := sdeServer(t, http.StatusServiceUnavailable, unexpectedArchive(t))
+	f := newTestFetcher(srv, dir, newDBRecorder(t))
+
+	got := runPauses(t, f, newPauseRecorder(3))
+	assertPauses(t, got, 6*time.Hour, 6*time.Hour, 6*time.Hour)
+}
+
+// TestOpenNewestTypeDBKeepsPartialBuilds pins that restore opens the ready DB
+// without touching the .partial build of a running service.
+func TestOpenNewestTypeDBKeepsPartialBuilds(t *testing.T) {
+	dir := t.TempDir()
+	makeReadyTypeDB(t, dir, "types-100")
+	partial := filepath.Join(dir, "types-"+testBuild+".partial")
+	touchFile(t, partial)
+	touchDir(t, partial+".index")
+
+	db, err := OpenNewestTypeDB(dir)
+	if err != nil {
+		t.Fatalf("OpenNewestTypeDB: %v", err)
+	}
+	defer db.Close()
+	if ty, ok := db.GetTypeByID(fixtureTypeID); !ok || ty.Name != "types-100" {
+		t.Errorf("opened DB type = %v %v, want types-100", ty.Name, ok)
+	}
+	assertExists(t, partial, partial+".index")
+}
+
+func TestOpenNewestTypeDBNone(t *testing.T) {
+	dir := t.TempDir()
+	partial := filepath.Join(dir, "types-"+testBuild+".partial")
+	touchFile(t, partial)
+
+	db, err := OpenNewestTypeDB(dir)
+	if !errors.Is(err, ErrNoTypeDB) {
+		t.Fatalf("OpenNewestTypeDB = %v, %v; want ErrNoTypeDB", db, err)
+	}
+	assertExists(t, partial)
 }

@@ -19,6 +19,17 @@ import (
 // errStopped aborts a type DB build when the fetcher is closed.
 var errStopped = errors.New("static fetcher stopped")
 
+// ErrNoTypeDB means db_path holds no ready type DB.
+var ErrNoTypeDB = errors.New("no ready type DB")
+
+const (
+	// refreshInterval is the pause between checks for a newer SDE build.
+	refreshInterval = 6 * time.Hour
+	// firstRetryInterval is the first pause after a failed run while no type DB
+	// is served; it doubles on every failure up to refreshInterval.
+	firstRetryInterval = 5 * time.Minute
+)
+
 // StaticFetcher continually fetches a new static dump and updates the type database with the current types
 type StaticFetcher struct {
 	dbPath   string
@@ -33,14 +44,32 @@ type StaticFetcher struct {
 	runMu       sync.Mutex
 	currentPath string
 
+	// after is time.After; tests replace it to observe pauses without waiting.
+	after func(time.Duration) <-chan time.Time
+
 	stop chan bool
 	wg   *sync.WaitGroup
+}
+
+// OpenNewestTypeDB opens the newest ready type DB in dbPath read-only without
+// building or removing anything; it returns ErrNoTypeDB if there is none.
+func OpenNewestTypeDB(dbPath string) (typedb.TypeDB, error) {
+	path, ok := findNewestTypeDB(dbPath)
+	if !ok {
+		return nil, fmt.Errorf("%w in %s", ErrNoTypeDB, dbPath)
+	}
+	typeDB, err := bolt.NewTypeDB(path, false)
+	if err != nil {
+		return nil, fmt.Errorf("opening type DB %s: %w", path, err)
+	}
+	return typeDB, nil
 }
 
 // NewStaticFetcher delivers a type DB to callback and keeps it current. With a
 // ready DB on disk it is delivered at once and the newest build is fetched in
 // the background; on an empty db_path the first build is fetched synchronously.
-// cleanup=false keeps older type DBs on disk.
+// Until a DB is delivered, runs repeat after firstRetryInterval, doubling up
+// to refreshInterval. cleanup=false keeps older type DBs on disk.
 func NewStaticFetcher(client *pester.Client, dbPath string, cleanup bool, callback func(typeDB typedb.TypeDB)) (*StaticFetcher, error) {
 	return newStaticFetcher(client, dbPath, DefaultManifestURL, cleanup, callback).start(), nil
 }
@@ -53,6 +82,8 @@ func newStaticFetcher(client *pester.Client, dbPath, manifestURL string, cleanup
 
 		manifestURL: manifestURL,
 		cleanup:     cleanup,
+
+		after: time.After,
 
 		stop: make(chan bool),
 		wg:   &sync.WaitGroup{},
@@ -87,9 +118,15 @@ func (f *StaticFetcher) start() *StaticFetcher {
 				log.Printf("ERROR: failed to fetch static data from CCP, keeping the current type DB: %s", err)
 			}
 		}
+		retryInterval := firstRetryInterval
 		for {
+			wait := refreshInterval
+			if !f.hasDelivered() {
+				wait = retryInterval
+				retryInterval = min(2*retryInterval, refreshInterval)
+			}
 			select {
-			case <-time.After(6 * time.Hour):
+			case <-f.after(wait):
 			case <-f.stop:
 				return
 			}
@@ -139,6 +176,13 @@ func (f *StaticFetcher) RunOnce() error {
 		}
 	}
 	return nil
+}
+
+// hasDelivered reports whether a type DB has reached the callback.
+func (f *StaticFetcher) hasDelivered() bool {
+	f.runMu.Lock()
+	defer f.runMu.Unlock()
+	return f.currentPath != ""
 }
 
 // deliver opens a ready DB read-only and hands it to the callback.

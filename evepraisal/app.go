@@ -41,6 +41,10 @@ func appMain() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
+	if err := prepareDataDirs(viper.GetString("db_path"), viper.GetString("backup_path")); err != nil {
+		log.Fatalf("Couldn't create data directories: %s", err)
+	}
+
 	log.Println("Starting price DB")
 	priceDB, err := bolt.NewPriceDB(filepath.Join(viper.GetString("db_path"), "prices"))
 	if err != nil {
@@ -256,6 +260,17 @@ func appMain() {
 
 	<-stop
 	log.Println("Shutting down")
+}
+
+// prepareDataDirs creates db_path and backup_path: a fresh bind mount over
+// /data hides the directories the image ships, and bolt does not create them.
+func prepareDataDirs(dbPath, backupPath string) error {
+	for _, dir := range []string{dbPath, backupPath} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func mustStartServers(handler http.Handler) []*http.Server {

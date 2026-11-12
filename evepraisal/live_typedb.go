@@ -1,10 +1,14 @@
 package main
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/evepraisal/go-evepraisal/typedb"
 )
+
+// errNoTypeDB is returned while no type DB has been delivered yet.
+var errNoTypeDB = errors.New("type DB is not loaded yet")
 
 // liveTypeDB is the TypeDB the web handlers and parsers hold for the whole
 // process; replace swaps the backing DB while requests are in flight.
@@ -27,6 +31,9 @@ func (l *liveTypeDB) replace(db typedb.TypeDB) typedb.TypeDB {
 func (l *liveTypeDB) GetType(typeName string) (typedb.EveType, bool) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+	if l.db == nil {
+		return typedb.EveType{}, false
+	}
 	return l.db.GetType(typeName)
 }
 
@@ -34,6 +41,9 @@ func (l *liveTypeDB) GetType(typeName string) (typedb.EveType, bool) {
 func (l *liveTypeDB) HasType(typeName string) bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+	if l.db == nil {
+		return false
+	}
 	return l.db.HasType(typeName)
 }
 
@@ -41,6 +51,9 @@ func (l *liveTypeDB) HasType(typeName string) bool {
 func (l *liveTypeDB) GetTypeByID(typeID int64) (typedb.EveType, bool) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+	if l.db == nil {
+		return typedb.EveType{}, false
+	}
 	return l.db.GetTypeByID(typeID)
 }
 
@@ -48,6 +61,9 @@ func (l *liveTypeDB) GetTypeByID(typeID int64) (typedb.EveType, bool) {
 func (l *liveTypeDB) ListTypes(startingTypeID int64, limit int64) ([]typedb.EveType, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+	if l.db == nil {
+		return nil, errNoTypeDB
+	}
 	return l.db.ListTypes(startingTypeID, limit)
 }
 
@@ -55,6 +71,9 @@ func (l *liveTypeDB) ListTypes(startingTypeID int64, limit int64) ([]typedb.EveT
 func (l *liveTypeDB) PutTypes(types []typedb.EveType) error {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+	if l.db == nil {
+		return errNoTypeDB
+	}
 	return l.db.PutTypes(types)
 }
 
@@ -62,6 +81,9 @@ func (l *liveTypeDB) PutTypes(types []typedb.EveType) error {
 func (l *liveTypeDB) Search(s string) []typedb.EveType {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+	if l.db == nil {
+		return nil
+	}
 	return l.db.Search(s)
 }
 
@@ -69,6 +91,9 @@ func (l *liveTypeDB) Search(s string) []typedb.EveType {
 func (l *liveTypeDB) Delete() error {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+	if l.db == nil {
+		return errNoTypeDB
+	}
 	return l.db.Delete()
 }
 
