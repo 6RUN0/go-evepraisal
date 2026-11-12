@@ -73,6 +73,9 @@ type PageRoot struct {
 		ExpireAfter          string
 		BaseURL              string
 		BaseURLWithoutScheme string
+		SiteName             string
+		SourceURL            string
+		AboutContactsHTML    template.HTML
 		User                 *evepraisal.User
 		LoginEnabled         bool
 		RawTextAreaDefault   string
@@ -110,6 +113,9 @@ func (ctx *Context) renderWithRoot(r *http.Request, w http.ResponseWriter, templ
 		root.UI.ExpireAfter = ctx.getSessionValueWithDefault(r, "expire_after", "360h")
 		root.UI.BaseURLWithoutScheme = strings.TrimPrefix(strings.TrimPrefix(ctx.BaseURL, "https://"), "http://")
 		root.UI.BaseURL = ctx.BaseURL
+		root.UI.SiteName = ctx.SiteName
+		root.UI.SourceURL = ctx.SourceURL
+		root.UI.AboutContactsHTML = ctx.AboutContactsHTML
 		root.UI.FlashMessages = ctx.getFlashMessages(r, w)
 		if ctx.OauthConfig != nil {
 			root.UI.LoginEnabled = true

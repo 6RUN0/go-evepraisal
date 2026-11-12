@@ -1,6 +1,9 @@
 package main
 
-import "github.com/spf13/viper"
+import (
+	"github.com/evepraisal/go-evepraisal/web"
+	"github.com/spf13/viper"
+)
 
 func init() {
 	viper.SetDefault("base-url", "http://127.0.0.1:8080")
@@ -17,6 +20,10 @@ func init() {
 	viper.SetDefault("management_addr", "127.0.0.1:8090")
 	viper.SetDefault("extra-html-header", "")
 	viper.SetDefault("extra-js", "")
+	viper.SetDefault("site-name", web.DefaultSiteName)
+	viper.SetDefault("source-url", web.DefaultSourceURL)
+	viper.SetDefault("about-contacts-html", string(web.DefaultAboutContactsHTML))
+	viper.SetDefault("favicon-path", "")
 	viper.SetDefault("ad-block", "")
 	viper.SetDefault("extra-static-file-path", "")
 	viper.SetDefault("sso-authorize-url", "https://login.eveonline.com/oauth/authorize")

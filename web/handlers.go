@@ -59,6 +59,10 @@ Disallow:`)
 
 // HandleFavicon is the handler for /favicon.ico
 func (ctx *Context) HandleFavicon(w http.ResponseWriter, r *http.Request) {
+	if ctx.FaviconPath != "" {
+		http.ServeFile(w, r, ctx.FaviconPath)
+		return
+	}
 	http.Redirect(w, r, "static/favicon.ico", http.StatusPermanentRedirect)
 }
 

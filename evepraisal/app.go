@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"os"
@@ -189,6 +190,17 @@ func appMain() {
 	webContext.ExtraJS = viper.GetString("extra-js")
 	webContext.AdBlock = viper.GetString("ad-block")
 	webContext.ExtraStaticFilePath = viper.GetString("extra-static-file-path")
+	webContext.SiteName = viper.GetString("site-name")
+	webContext.SourceURL = strings.TrimSuffix(viper.GetString("source-url"), "/")
+	webContext.AboutContactsHTML = template.HTML(viper.GetString("about-contacts-html"))
+	webContext.FaviconPath = viper.GetString("favicon-path")
+	if webContext.FaviconPath != "" {
+		favicon, ferr := os.Open(webContext.FaviconPath)
+		if ferr != nil {
+			log.Fatalf("Couldn't read favicon-path: %s", ferr)
+		}
+		_ = favicon.Close()
+	}
 	if viper.GetString("cookie-auth-key") != "" {
 		webContext.CookieStore = sessions.NewCookieStore(
 			[]byte(viper.GetString("cookie-auth-key")),
