@@ -15,37 +15,58 @@ import (
 	"github.com/sethgrid/pester"
 )
 
-func downloadTypes(client *pester.Client, staticDumpURL string, staticDataPath string) error {
-	out, err := os.Create(staticDataPath)
-	defer func() {
-		_ = out.Close()
-	}()
-	if err != nil {
-		return err
-	}
-
+// downloadTypes fetches the archive into <dst>.download and renames it to
+// dst only after a 200, a complete body and a readable zip directory.
+func downloadTypes(client *pester.Client, staticDumpURL, dst string) error {
 	req, err := http.NewRequest("GET", staticDumpURL, nil)
 	if err != nil {
 		return err
 	}
-
 	req.Header.Add("User-Agent", evepraisal.UserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("download %s: %w", staticDumpURL, err)
 	}
 	defer resp.Body.Close()
-
-	n, err := io.Copy(out, resp.Body)
-	if err != nil {
-		rmErr := os.Remove(staticDataPath)
-		if rmErr != nil {
-			log.Printf("ERROR: Failed to remove type db zip file after failing to fully download it: %s", rmErr)
-		}
-		return err
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download %s: unexpected status %s", staticDumpURL, resp.Status)
 	}
 
-	log.Printf("Successfully wrote %d bytes to %s", n, staticDataPath)
+	tmp := dst + typeDBDownloadPart
+	err = writeVerifiedArchive(resp, tmp)
+	if err == nil {
+		err = os.Rename(tmp, dst)
+	}
+	if err != nil {
+		if rmErr := os.Remove(tmp); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Printf("ERROR: removing incomplete download %s: %s", tmp, rmErr)
+		}
+		return fmt.Errorf("download %s: %w", staticDumpURL, err)
+	}
+	return nil
+}
+
+func writeVerifiedArchive(resp *http.Response, path string) error {
+	out, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(out, resp.Body)
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if resp.ContentLength >= 0 && n != resp.ContentLength {
+		return fmt.Errorf("got %d of %d bytes", n, resp.ContentLength)
+	}
+	r, err := zip.OpenReader(path)
+	if err != nil {
+		return fmt.Errorf("verify archive: %w", err)
+	}
+	_ = r.Close()
+	log.Printf("Successfully wrote %d bytes to %s", n, path)
 	return nil
 }
 

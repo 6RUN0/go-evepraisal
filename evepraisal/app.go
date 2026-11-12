@@ -104,16 +104,7 @@ func appMain() {
 	}
 
 	log.Println("Starting type fetcher")
-	staticdumpHTTPClient := pester.New()
-	staticdumpHTTPClient.Concurrency = 1
-	// TODO: Remove this once CCP figures out the certificate situation with cdn1.eveonline.com
-	staticdumpHTTPClient.Transport = &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	staticdumpHTTPClient.Timeout = 600 * time.Second
-	staticdumpHTTPClient.Backoff = pester.ExponentialJitterBackoff
-	staticdumpHTTPClient.MaxRetries = 2
-	staticdumpHTTPClient.LogHook = func(e pester.ErrEntry) { log.Println(httpClient.FormatError(e)) }
+	staticdumpHTTPClient := newStaticdumpHTTPClient()
 
 	if viper.GetString("newrelic_license-key") != "" {
 		newRelicApplication, err := newrelic.NewApplication(
@@ -131,37 +122,37 @@ func appMain() {
 		staticdumpHTTPClient.Transport = NewRoundTripper(newRelicApplication, staticdumpHTTPClient.Transport)
 	}
 
-	staticFetcher, err := staticdump.NewStaticFetcher(staticdumpHTTPClient, viper.GetString("db_path"), func(typeDB typedb.TypeDB) {
-		oldTypeDB := app.TypeDB
-		app.TypeDB = typeDB
-		app.Parser = evepraisal.NewContextMultiParser(
-			typeDB,
-			[]parsers.Parser{
-				parsers.ParseKillmail,
-				parsers.ParseEFT,
-				parsers.ParseFitting,
-				parsers.ParseLootHistory,
-				parsers.ParsePI,
-				parsers.ParseViewContents,
-				parsers.ParseWallet,
-				parsers.ParseSurveyScan,
-				parsers.NewContextListingParser(typeDB),
-				parsers.ParseIndustry,
-				parsers.ParseContract,
-				parsers.ParseAssets,
-				parsers.ParseCargoScan,
-				parsers.ParseDScan,
-				parsers.ParseCompare,
-				parsers.ParseMoonLedger,
-				parsers.ParseMiningLedger,
-				parsers.NewHeuristicParser(typeDB),
-			})
+	typeDB := &liveTypeDB{}
+	app.TypeDB = typeDB
+	app.Parser = evepraisal.NewContextMultiParser(
+		typeDB,
+		[]parsers.Parser{
+			parsers.ParseKillmail,
+			parsers.ParseEFT,
+			parsers.ParseFitting,
+			parsers.ParseLootHistory,
+			parsers.ParsePI,
+			parsers.ParseViewContents,
+			parsers.ParseWallet,
+			parsers.ParseSurveyScan,
+			parsers.NewContextListingParser(typeDB),
+			parsers.ParseIndustry,
+			parsers.ParseContract,
+			parsers.ParseAssets,
+			parsers.ParseCargoScan,
+			parsers.ParseDScan,
+			parsers.ParseCompare,
+			parsers.ParseMoonLedger,
+			parsers.ParseMiningLedger,
+			parsers.NewHeuristicParser(typeDB),
+		})
 
+	staticFetcher, err := staticdump.NewStaticFetcher(staticdumpHTTPClient, viper.GetString("db_path"), true, func(newTypeDB typedb.TypeDB) {
+		oldTypeDB := typeDB.replace(newTypeDB)
 		if oldTypeDB != nil {
 			log.Println("closing old typedb")
-			err = oldTypeDB.Close()
-			if err != nil {
-				log.Println("error closing old typedb: ", err)
+			if cerr := oldTypeDB.Close(); cerr != nil {
+				log.Println("error closing old typedb: ", cerr)
 			}
 			log.Println("closed old typedb")
 		}
@@ -176,11 +167,9 @@ func appMain() {
 			log.Fatalf("Problem closing static fetcher: %s", derr)
 		}
 
-		if app.TypeDB != nil {
-			derr = app.TypeDB.Close()
-			if derr != nil {
-				log.Fatalf("Problem closing typeDB: %s", derr)
-			}
+		derr = typeDB.Close()
+		if derr != nil {
+			log.Fatalf("Problem closing typeDB: %s", derr)
 		}
 	}()
 

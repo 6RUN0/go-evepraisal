@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/evepraisal/go-evepraisal"
@@ -44,18 +45,32 @@ func restoreMain() {
 		}
 	}
 
-	var typeDB typedb.TypeDB
+	var (
+		typeDBMu sync.Mutex
+		typeDB   typedb.TypeDB
+	)
 
 	staticdumpHTTPClient := pester.New()
 	staticdumpHTTPClient.Concurrency = 1
 	staticdumpHTTPClient.Timeout = 5 * time.Minute
 	staticdumpHTTPClient.Backoff = pester.ExponentialJitterBackoff
 	staticdumpHTTPClient.MaxRetries = 10
-	staticFetcher, err := staticdump.NewStaticFetcher(staticdumpHTTPClient, viper.GetString("db_path"), func(newTypeDB typedb.TypeDB) {
+	// The restore keeps the first DB it gets; a newer build fetched in the
+	// background meanwhile is closed unused and old DBs stay on disk.
+	staticFetcher, err := staticdump.NewStaticFetcher(staticdumpHTTPClient, viper.GetString("db_path"), false, func(newTypeDB typedb.TypeDB) {
+		typeDBMu.Lock()
+		defer typeDBMu.Unlock()
+		if typeDB != nil {
+			_ = newTypeDB.Close()
+			return
+		}
 		log.Println("Got new typedb", newTypeDB)
 		typeDB = newTypeDB
 	})
-	log.Println("TypeDB", typeDB)
+	typeDBMu.Lock()
+	restoreTypeDB := typeDB
+	typeDBMu.Unlock()
+	log.Println("TypeDB", restoreTypeDB)
 	if err != nil {
 		log.Fatalf("Couldn't start static fetcher: %s", err)
 	}
@@ -65,8 +80,8 @@ func restoreMain() {
 			log.Fatalf("Problem closing static fetcher: %s", err)
 		}
 
-		if typeDB != nil {
-			err = typeDB.Close()
+		if restoreTypeDB != nil {
+			err = restoreTypeDB.Close()
 			if err != nil {
 				log.Fatalf("Problem closing typeDB: %s", err)
 			}
@@ -110,7 +125,7 @@ func restoreMain() {
 
 	for _, filename := range filenames {
 		log.Printf("Start restoring: %s", filename)
-		err := legacy.RestoreLegacyFile(saver, typeDB, filename)
+		err := legacy.RestoreLegacyFile(saver, restoreTypeDB, filename)
 		if err != nil {
 			log.Fatalf("Error while importing legacy file: %s", err)
 		}
