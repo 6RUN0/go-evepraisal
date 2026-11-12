@@ -1,3 +1,4 @@
+// Package evepraisal holds the appraisal model and the App that turns pasted text into appraisals.
 package evepraisal
 
 import (
@@ -119,6 +120,7 @@ type AppraisalItem struct {
 	} `json:"meta,omitempty"`
 }
 
+// SellPrice returns the sell price to quote: the minimum when the percentile is more than 2% above it, the percentile otherwise.
 func (i AppraisalItem) SellPrice() float64 {
 	if i.Prices.Sell.Percentile-i.Prices.Sell.Min > i.Prices.Sell.Min*0.02 {
 		return i.Prices.Sell.Min
@@ -126,6 +128,7 @@ func (i AppraisalItem) SellPrice() float64 {
 	return i.Prices.Sell.Percentile
 }
 
+// BuyPrice returns the buy price to quote: the maximum when the percentile is more than 2% below it, the percentile otherwise.
 func (i AppraisalItem) BuyPrice() float64 {
 	if i.Prices.Buy.Max-i.Prices.Buy.Percentile > i.Prices.Buy.Max*0.02 {
 		return i.Prices.Buy.Max
@@ -167,10 +170,12 @@ func (i AppraisalItem) RepresentativePrice() float64 {
 	return float64(i.Quantity) * i.SingleRepresentativePrice()
 }
 
+// TotalVolume returns the volume of the whole stack in m3.
 func (i AppraisalItem) TotalVolume() float64 {
 	return i.TypeVolume * float64(i.Quantity)
 }
 
+// MarketItemPrices holds the prices of one item type on one market.
 type MarketItemPrices struct {
 	Market string
 	TypeID int64

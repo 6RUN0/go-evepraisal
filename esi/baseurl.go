@@ -1,3 +1,4 @@
+// Package esi fetches market prices from the EVE Swagger Interface.
 package esi
 
 import (

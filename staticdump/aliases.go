@@ -1,3 +1,4 @@
+// Package staticdump downloads the EVE static data export and loads item types from it.
 package staticdump
 
 import (
@@ -79,7 +80,7 @@ var nameOverrides = map[int64]string{
 	9660: "Compact Anti-Thermal Shield Hardener",
 
 	// https://www.eveonline.com/article/qaxqcl/patch-notes-for-version-18-05
-	// patch_18_04ArmorHardenerOverrideRegex handles "FLAVORNAME Armor DAMAGETYPE Hardener → FLAVORNAME DAMAGETYPE Armor Hardener."
+	// patch18_04ArmorHardenerOverrideRegex handles "FLAVORNAME Armor DAMAGETYPE Hardener -> FLAVORNAME DAMAGETYPE Armor Hardener."
 	16357: "Experimental Enduring EM Armor Hardener I",
 	16365: "Experimental Enduring Explosive Armor Hardener I",
 	16373: "Experimental Enduring Kinetic Armor Hardener I",
@@ -98,13 +99,13 @@ func computeAliases(typeID int64, typeName string) (string, []string) {
 		return nameOverride, []string{typeName}
 	}
 
-	armorHwOverride, ok := patch_18_04ArmorHardenerOverride(typeName)
+	armorHwOverride, ok := patch18_04ArmorHardenerOverride(typeName)
 	if ok {
 		// log.Printf("%d %s -> %s", typeID, typeName, armorHwOverride)
 		return armorHwOverride, []string{typeName}
 	}
 
-	rigOverride, ok := patch_18_04RigOverride(typeName)
+	rigOverride, ok := patch18_04RigOverride(typeName)
 	if ok {
 		// log.Printf("%d %s -> %s", typeID, typeName, rigOverride)
 		return rigOverride, []string{typeName}
@@ -127,14 +128,14 @@ var damageTypes = []string{
 	"Thermal",
 }
 
-var patch_18_04RigOverrideRegex = regexp.MustCompile(fmt.Sprintf(
+var patch18_04RigOverrideRegex = regexp.MustCompile(fmt.Sprintf(
 	`^(%s) Anti-(%s) (Screen Reinforcer|Pump) (I|II)$`,
 	strings.Join(sizes, "|"),
 	strings.Join(damageTypes, "|"),
 ))
 
-func patch_18_04RigOverride(typeName string) (string, bool) {
-	match := patch_18_04RigOverrideRegex.FindStringSubmatch(typeName)
+func patch18_04RigOverride(typeName string) (string, bool) {
+	match := patch18_04RigOverrideRegex.FindStringSubmatch(typeName)
 	if match == nil {
 		return "", false
 	}
@@ -198,14 +199,14 @@ var flavorTypes = []string{
 	"Corpus X-Type",
 }
 
-var patch_18_04ArmorHardenerOverrideRegex = regexp.MustCompile(fmt.Sprintf(
+var patch18_04ArmorHardenerOverrideRegex = regexp.MustCompile(fmt.Sprintf(
 	`^(%s) Armor (%s) Hardener ?(I|II)? ?(Blueprint)?$`,
 	strings.Join(flavorTypes, "|"),
 	strings.Join(damageTypes, "|"),
 ))
 
-func patch_18_04ArmorHardenerOverride(typeName string) (string, bool) {
-	match := patch_18_04ArmorHardenerOverrideRegex.FindStringSubmatch(typeName)
+func patch18_04ArmorHardenerOverride(typeName string) (string, bool) {
+	match := patch18_04ArmorHardenerOverrideRegex.FindStringSubmatch(typeName)
 	if match == nil {
 		return "", false
 	}

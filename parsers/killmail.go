@@ -72,8 +72,8 @@ func ParseKillmail(input Input) (ParserResult, Input) {
 	offset++
 
 	for ; offset < len(inputLines); offset++ {
-		line := inputLines[offset]
-		if line == "Involved parties:" {
+		switch inputLines[offset] {
+		case "Involved parties:":
 			offset += 2
 			involved, involvedOffset, err := parsekillmailInvolved(inputLines[offset:])
 			if err != nil {
@@ -81,7 +81,7 @@ func ParseKillmail(input Input) (ParserResult, Input) {
 			}
 			killmail.Involved = involved
 			offset += involvedOffset
-		} else if line == "Destroyed items:" {
+		case "Destroyed items:":
 			offset += 2
 			destroyed, destroyedOffset, err := parsekillmailItems(inputLines[offset:])
 			if err != nil {
@@ -89,7 +89,7 @@ func ParseKillmail(input Input) (ParserResult, Input) {
 			}
 			killmail.Destroyed = destroyed
 			offset += destroyedOffset
-		} else if line == "Dropped items:" {
+		case "Dropped items:":
 			offset += 2
 			dropped, droppedOffset, err := parsekillmailItems(inputLines[offset:])
 			if err != nil {
@@ -97,7 +97,7 @@ func ParseKillmail(input Input) (ParserResult, Input) {
 			}
 			killmail.Dropped = dropped
 			offset += droppedOffset
-		} else {
+		default:
 			return nil, input
 		}
 	}
@@ -185,5 +185,5 @@ func parsekillmailItems(lines []string) ([]KillmailItem, int, error) {
 }
 
 func killmailKeyFormat(s string) string {
-	return strings.Replace(strings.ToLower(s), " ", "_", -1)
+	return strings.ReplaceAll(strings.ToLower(s), " ", "_")
 }

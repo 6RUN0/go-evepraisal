@@ -1,0 +1,34 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - revive
+  exclusions:
+    paths:
+      - ^vendor/
+    rules:
+      # Closing an HTTP body after reading it loses nothing; a write path Close stays reported.
+      - linters: [errcheck]
+        text: "Error return value of `[^`]*\\.Body\\.Close` is not checked"
+      # Read-only files and archives; their Close cannot lose written data.
+      - linters: [errcheck]
+        path: ^(legacy/restore\.go|staticdump/load\.go|staticdump/zip\.go|web/handle_appraisal\.go)$
+        text: "Error return value of `(file|r|fr|f)\\.Close` is not checked"
+      # Tests close fixtures they only read or tear down.
+      - linters: [errcheck]
+        path: _test\.go$
+        text: "Error return value of `[^`]*\\.Close` is not checked"
+      # Capitalised upstream error strings reach users and logs verbatim; rewording them is a separate change.
+      - linters: [staticcheck]
+        text: "ST1005:"
+      # Handler and interface signatures are fixed by their callers.
+      - linters: [revive]
+        text: "unused-parameter:"
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    paths:
+      - ^vendor/

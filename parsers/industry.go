@@ -52,13 +52,13 @@ var reIndustryMaterials = regexp.MustCompile(strings.Join([]string{
 }, ""))
 
 var industryHeaders = map[string]bool{
-	"Components				": true,
-	"Minerals				": true,
+	"Components				":          true,
+	"Minerals				":            true,
 	"Planetary materials				": true,
-	"Items				": true,
-	"Datacores				": true,
-	"Optional items				": true,
-	"No item selected				": true,
+	"Items				":               true,
+	"Datacores				":           true,
+	"Optional items				":      true,
+	"No item selected				":    true,
 	`Item	Required	Available	Est. Unit price	typeID`: true,
 }
 

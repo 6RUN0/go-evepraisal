@@ -4,18 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/viper"
 )
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)

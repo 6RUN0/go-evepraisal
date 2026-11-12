@@ -1,3 +1,4 @@
+// Package typedb defines the storage interface for EVE item types.
 package typedb
 
 // TypeDB defines the interface for storing and retreiving types

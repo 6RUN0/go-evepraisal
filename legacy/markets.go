@@ -1,3 +1,4 @@
+// Package legacy keeps compatibility with data and market IDs of the original evepraisal.
 package legacy
 
 // MarketIDToName maps the legacy market IDs with the new way of identifying each market

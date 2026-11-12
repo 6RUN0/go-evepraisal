@@ -131,6 +131,7 @@ func (p *HeuristicParser) heuristicMethod1(line string) []HeuristicItem {
 		name := ""
 		quantity := int64(1)
 		matched := true
+	specParts:
 		for index, specPart := range spec {
 			switch specPart {
 			case sHeuristicIgnore:
@@ -138,13 +139,13 @@ func (p *HeuristicParser) heuristicMethod1(line string) []HeuristicItem {
 				name = parts[index]
 				if !p.typeDB.HasType(name) {
 					matched = false
-					break
+					break specParts
 				}
 			case sHeuristicQuantity:
 				quantity = ToInt(parts[index])
 				if quantity == 0 {
 					matched = false
-					break
+					break specParts
 				}
 			}
 		}

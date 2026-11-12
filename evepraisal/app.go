@@ -1,3 +1,4 @@
+// Command evepraisal runs the appraisal web server and its maintenance subcommands.
 package main
 
 import (

@@ -2,6 +2,9 @@
 .*
 
 !/.gitignore
+!/.editorconfig
+!/.golangci.yml
+!/.rumdl.toml
 !/.github/
 /.github/*
 !/.github/workflows/
@@ -15,6 +18,7 @@
 !/parsers/
 !/scripts/
 !/staticdump/
+!/tools/
 !/typedb/
 !/vendor/
 !/vendor/**/.*

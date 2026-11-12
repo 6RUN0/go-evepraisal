@@ -1,3 +1,4 @@
+// Package management serves the internal management HTTP endpoints, such as database backups.
 package management
 
 import (
@@ -57,7 +58,7 @@ func (ctx *Context) HandleBackup(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// HandleBackupToFile is the handler for /backup/appraisals
+// HandleBackupToFile is the handler for /backup-to-file/appraisals
 func (ctx *Context) HandleBackupToFile(w http.ResponseWriter, req *http.Request) {
 	db, ok := ctx.App.AppraisalDB.(*boltdb.AppraisalDB)
 	if !ok {

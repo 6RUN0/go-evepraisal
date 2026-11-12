@@ -1,3 +1,4 @@
+// Package web serves the public HTTP interface: pages, API and static files.
 package web
 
 import (

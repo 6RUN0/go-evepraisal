@@ -2,6 +2,8 @@ module github.com/evepraisal/go-evepraisal
 
 go 1.27
 
+toolchain go1.27.3
+
 require (
 	github.com/NYTimes/gziphandler v1.1.1
 	github.com/blevesearch/bleve/v2 v2.3.6

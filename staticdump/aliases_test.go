@@ -8,7 +8,7 @@ import (
 
 func TestPatch_18_04RigOverride(t *testing.T) {
 	{
-		alias, found := patch_18_04RigOverride("Small Anti-EM Screen Reinforcer I")
+		alias, found := patch18_04RigOverride("Small Anti-EM Screen Reinforcer I")
 		assert.Equal(t, "Small EM Shield Reinforcer I", alias)
 		assert.True(t, found)
 	}

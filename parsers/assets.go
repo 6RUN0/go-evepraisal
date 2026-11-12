@@ -1,3 +1,4 @@
+// Package parsers recognises the text formats pasted from the EVE client.
 package parsers
 
 import (

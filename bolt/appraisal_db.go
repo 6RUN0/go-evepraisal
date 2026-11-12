@@ -1,3 +1,4 @@
+// Package bolt stores appraisals, prices, types and HTTP cache entries in BoltDB.
 package bolt
 
 import (

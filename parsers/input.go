@@ -19,7 +19,7 @@ func StringsToInput(lines []string) Input {
 
 // StringToInput converts a strings into an Input object
 func StringToInput(s string) Input {
-	s = strings.Replace(s, "\r", "", -1)
+	s = strings.ReplaceAll(s, "\r", "")
 	return StringsToInput(strings.Split(s, "\n"))
 }
 

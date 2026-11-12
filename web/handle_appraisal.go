@@ -245,10 +245,7 @@ func (ctx *Context) HandleAppraisal(w http.ResponseWriter, r *http.Request) {
 	user := ctx.GetCurrentUser(r)
 
 	visibility := getRequestParam(r, "visibility")
-	private := false
-	if visibility == "private" && user != nil {
-		private = true
-	}
+	private := visibility == "private" && user != nil
 
 	// Actually do the appraisal
 	appraisal, err := ctx.App.StringToAppraisal(market, body, pricePercentage)
@@ -421,7 +418,7 @@ func (ctx *Context) HandleViewAppraisal(w http.ResponseWriter, r *http.Request) 
 
 	if appraisal.Private {
 		correctToken := appraisal.PrivateToken == bone.GetValue(r, "privateToken")
-		if !(isOwner || correctToken) {
+		if !isOwner && !correctToken {
 			ctx.renderErrorPage(r, w, http.StatusNotFound, "Not Found", "I couldn't find what you're looking for")
 			return
 		}
