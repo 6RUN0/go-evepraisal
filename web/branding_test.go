@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/evepraisal/go-evepraisal"
+	"github.com/evepraisal/go-evepraisal/typedb"
 	"github.com/gorilla/sessions"
 )
 
@@ -135,5 +136,50 @@ func TestFaviconDefault(t *testing.T) {
 	ctx.HTTPHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/favicon.ico", nil))
 	if rec.Code != http.StatusPermanentRedirect || rec.Header().Get("Location") != "/static/favicon.ico" {
 		t.Errorf("got %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// stubTypeDB serves one type by ID and name; the embedded nil interface panics on any other call.
+type stubTypeDB struct {
+	typedb.TypeDB
+	item typedb.EveType
+}
+
+func (s stubTypeDB) GetTypeByID(typeID int64) (typedb.EveType, bool) {
+	return s.item, typeID == s.item.ID
+}
+
+func (s stubTypeDB) GetType(typeName string) (typedb.EveType, bool) {
+	return s.item, typeName == s.item.Name
+}
+
+// stubPriceDB reports no market data for any type.
+type stubPriceDB struct {
+	evepraisal.PriceDB
+}
+
+func (stubPriceDB) GetPrice(market string, typeID int64) (evepraisal.Prices, bool) {
+	return evepraisal.Prices{}, false
+}
+
+func TestItemHeaderLinksEveTycoon(t *testing.T) {
+	ctx := newBrandingContext(t)
+	ctx.App.TypeDB = stubTypeDB{item: typedb.EveType{ID: 34, Name: "Tritanium"}}
+	ctx.App.PriceDB = stubPriceDB{}
+	code, body := get(t, ctx, "/item/34")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	for _, want := range []string{
+		`https://evetycoon.com/market/34`,
+		`EVE Tycoon`,
+		`https://eveinfo.com/item/34`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "evemarketer.com") {
+		t.Errorf("body still links evemarketer.com")
 	}
 }
