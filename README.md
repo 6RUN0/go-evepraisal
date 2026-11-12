@@ -202,9 +202,12 @@ Any other problem with the file (a syntax error, no read permission) stops
 the start with `Invalid config file: <path>: <reason>`.
 
 On start the service logs every key that has a default or is set in the
-file or the environment, in key order. The values of `cookie-auth-key`,
-`cookie-encryption-key`, `sso-client-secret` and `newrelic_license-key` are
-printed as `<set>` or `<unset>`, never in clear.
+file or the environment, in key order; keys of a TOML table appear as
+`<table>.<key>`. The values of `cookie-auth-key`, `cookie-encryption-key`,
+`sso-client-secret`, `newrelic_license-key` and of every key whose name
+contains `key`, `secret`, `password` or `token` (any case) are printed as
+`<set>` or `<unset>`, never in clear. The four named keys are listed even
+when unset.
 
 ### Environment variables
 
@@ -221,13 +224,20 @@ key upper-cased with `-` replaced by `_` and prefixed with `EVEPRAISAL_`:
 - **Files.** `<variable>_FILE` (`EVEPRAISAL_COOKIE_AUTH_KEY_FILE`) names a
   file whose content is the value, for Docker or compose secrets. The file is
   read once at start; exactly one trailing line ending (`\n` or `\r\n`) is
-  removed, nothing else, so an empty file sets the key to an empty string.
-  Only the portable name takes `_FILE`; `EVEPRAISAL_BASE-URL_FILE` is
-  ignored. A variable and its `_FILE` both set stops the start with
-  `Invalid environment: <variable> and <variable>_FILE are both set; set only
-  one`. A missing or unreadable file stops it with
-  `Invalid environment: <key>: read <variable>_FILE: open <path>: <reason>`;
-  the content is never printed.
+  removed, nothing else. An empty file sets a text key to an empty string;
+  for `db_path`, `backup_path`, `market-fetch-interval` and `http_redirect`
+  it stops the start with `Invalid environment: <key>: <variable>_FILE names
+  an empty file`. Only the portable name takes `_FILE`. A variable and its
+  `_FILE` both set stops the start with `Invalid environment: <variable> and
+  <variable>_FILE are both set; set only one`. A missing or unreadable file,
+  or a directory, stops it with `Invalid environment: <key>: read
+  <variable>_FILE: <reason>`, where the reason names the path; the content
+  is never printed.
+- **Unknown variables.** A non-empty `EVEPRAISAL_*` variable that is no
+  accepted name of any key (a typo, or a legacy name with `_FILE` such as
+  `EVEPRAISAL_BASE-URL_FILE`) is ignored and logged once at start as
+  `WARN: Unknown environment variable ignored name=<variable>`, without its
+  value.
 - **Precedence.** A variable or its `_FILE` overrides the config file, the
   config file overrides the default. An empty variable (`EVEPRAISAL_X=` or
   `EVEPRAISAL_X_FILE=`) counts as unset: the file or the default applies.

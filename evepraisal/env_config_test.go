@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +15,17 @@ import (
 
 	"github.com/spf13/viper"
 )
+
+// clearEvepraisalEnv hides every EVEPRAISAL_* variable of the caller for one
+// test; an empty variable counts as unset, and t.Setenv restores the value.
+func clearEvepraisalEnv(t *testing.T) {
+	t.Helper()
+	for _, entry := range os.Environ() {
+		if name, _, _ := strings.Cut(entry, "="); strings.HasPrefix(name, envPrefix) {
+			t.Setenv(name, "")
+		}
+	}
+}
 
 // writeSecretFile writes content to a fresh file and returns its path.
 func writeSecretFile(t *testing.T, content string) string {
@@ -38,6 +52,7 @@ func TestEnvNamePortable(t *testing.T) {
 }
 
 func TestConfigureEnvPortableName(t *testing.T) {
+	clearEvepraisalEnv(t)
 	t.Setenv("EVEPRAISAL_BASE_URL", "https://portable.example")
 	v := viper.New()
 	if err := configureEnv(v); err != nil {
@@ -49,6 +64,7 @@ func TestConfigureEnvPortableName(t *testing.T) {
 }
 
 func TestConfigureEnvLegacyName(t *testing.T) {
+	clearEvepraisalEnv(t)
 	t.Setenv("EVEPRAISAL_BASE-URL", "https://legacy.example")
 	v := viper.New()
 	if err := configureEnv(v); err != nil {
@@ -60,6 +76,7 @@ func TestConfigureEnvLegacyName(t *testing.T) {
 }
 
 func TestConfigureEnvEmptyVariableIsUnset(t *testing.T) {
+	clearEvepraisalEnv(t)
 	t.Setenv("EVEPRAISAL_SITE_NAME", "")
 	v := viper.New()
 	v.SetDefault("site-name", "Default")
@@ -72,6 +89,7 @@ func TestConfigureEnvEmptyVariableIsUnset(t *testing.T) {
 }
 
 func TestConfigureEnvConflictingNames(t *testing.T) {
+	clearEvepraisalEnv(t)
 	t.Setenv("EVEPRAISAL_BASE_URL", "https://a.example")
 	t.Setenv("EVEPRAISAL_BASE-URL", "https://b.example")
 	err := configureEnv(viper.New())
@@ -81,6 +99,7 @@ func TestConfigureEnvConflictingNames(t *testing.T) {
 }
 
 func TestConfigureEnvSameValueUnderBothNames(t *testing.T) {
+	clearEvepraisalEnv(t)
 	t.Setenv("EVEPRAISAL_BASE_URL", "https://a.example")
 	t.Setenv("EVEPRAISAL_BASE-URL", "https://a.example")
 	v := viper.New()
@@ -93,6 +112,7 @@ func TestConfigureEnvSameValueUnderBothNames(t *testing.T) {
 }
 
 func TestConfigureEnvFileStripsOneLineEnding(t *testing.T) {
+	clearEvepraisalEnv(t)
 	cases := map[string]string{
 		"no newline":     "s3cret",
 		"LF":             "s3cret\n",
@@ -125,6 +145,7 @@ func TestConfigureEnvFileStripsOneLineEnding(t *testing.T) {
 }
 
 func TestConfigureEnvValueAndFileConflict(t *testing.T) {
+	clearEvepraisalEnv(t)
 	for _, valueName := range []string{"EVEPRAISAL_BASE_URL", "EVEPRAISAL_BASE-URL"} {
 		t.Run(valueName, func(t *testing.T) {
 			t.Setenv(valueName, "https://a.example")
@@ -138,6 +159,7 @@ func TestConfigureEnvValueAndFileConflict(t *testing.T) {
 }
 
 func TestConfigureEnvMissingFile(t *testing.T) {
+	clearEvepraisalEnv(t)
 	path := filepath.Join(t.TempDir(), "absent")
 	t.Setenv("EVEPRAISAL_COOKIE_AUTH_KEY_FILE", path)
 	err := configureEnv(viper.New())
@@ -147,6 +169,7 @@ func TestConfigureEnvMissingFile(t *testing.T) {
 }
 
 func TestConfigureEnvUnreadableFileHidesContent(t *testing.T) {
+	clearEvepraisalEnv(t)
 	path := writeSecretFile(t, "topsecret")
 	if err := os.Chmod(path, 0o000); err != nil {
 		t.Fatal(err)
@@ -163,6 +186,7 @@ func TestConfigureEnvUnreadableFileHidesContent(t *testing.T) {
 }
 
 func TestConfigureEnvTypedKeysFromFile(t *testing.T) {
+	clearEvepraisalEnv(t)
 	t.Setenv("EVEPRAISAL_HTTP_REDIRECT_FILE", writeSecretFile(t, "true\n"))
 	t.Setenv("EVEPRAISAL_MARKET_FETCH_INTERVAL_FILE", writeSecretFile(t, "15\n"))
 	t.Setenv("EVEPRAISAL_HTTPS_DOMAIN_WHITELIST_FILE", writeSecretFile(t, "a.example  b.example\n"))
@@ -182,6 +206,7 @@ func TestConfigureEnvTypedKeysFromFile(t *testing.T) {
 }
 
 func TestConfigureEnvPrecedence(t *testing.T) {
+	clearEvepraisalEnv(t)
 	dir := t.TempDir()
 	toml := "site-name = \"File\"\nsource-url = \"https://file.example\"\nfavicon-path = \"/file.ico\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "evepraisal.toml"), []byte(toml), 0o600); err != nil {
@@ -214,22 +239,124 @@ func TestConfigureEnvPrecedence(t *testing.T) {
 }
 
 func TestBuildSettingsLogMasksSecrets(t *testing.T) {
+	dir := t.TempDir()
+	toml := "sso-secret = \"leak-1\"\ndb-PASSWORD = \"leak-2\"\napi_token = \"leak-3\"\nsite-name = \"Visible\"\n[sso]\nclient-key = \"leak-4\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "evepraisal.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	v := viper.New()
+	if err := readConfig(v, dir); err != nil {
+		t.Fatal(err)
+	}
 	v.SetDefault("newrelic_license-key", "")
-	v.SetDefault("site-name", "Visible")
-	for _, key := range []string{"cookie-auth-key", "cookie-encryption-key", "sso-client-secret"} {
-		v.Set(key, "secret-"+key)
-	}
+	v.Set("cookie-auth-key", "leak-5")
+	v.Set("sso-client-secret", "leak-6")
 	got := buildSettingsLog(v)
-	for _, key := range []string{"cookie-auth-key", "cookie-encryption-key", "sso-client-secret"} {
-		if strings.Contains(got, "secret-"+key) {
-			t.Errorf("settings log prints the value of %s:\n%s", key, got)
-		}
+	if strings.Contains(got, "leak-") {
+		t.Errorf("settings log prints a secret value:\n%s", got)
 	}
-	for _, line := range []string{"cookie-auth-key <set>", "sso-client-secret <set>", "newrelic_license-key <unset>", `site-name "Visible"`} {
-		if !strings.Contains(strings.Join(strings.Fields(got), " "), line) {
+	flat := strings.Join(strings.Fields(got), " ")
+	for _, line := range []string{
+		"cookie-auth-key <set>", "sso-client-secret <set>", "newrelic_license-key <unset>",
+		"cookie-encryption-key <unset>", "sso-secret <set>", "db-password <set>", "api_token <set>",
+		"sso.client-key <set>", `site-name "Visible"`,
+	} {
+		if !strings.Contains(flat, line) {
 			t.Errorf("settings log lacks %q:\n%s", line, got)
 		}
+	}
+}
+
+func TestConfigureEnvEmptyFileRejectedForTypedKeys(t *testing.T) {
+	clearEvepraisalEnv(t)
+	for _, key := range []string{"db_path", "backup_path", "market-fetch-interval", "http_redirect"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(envName(key)+"_FILE", writeSecretFile(t, "\n"))
+			err := configureEnv(viper.New())
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Errorf("configureEnv() = %v, want an error naming %s", err, key)
+			}
+		})
+	}
+}
+
+func TestFindUnknownEnvNames(t *testing.T) {
+	environ := []string{
+		"PATH=/bin",
+		"EVEPRAISAL_BASE_URL=a",
+		"EVEPRAISAL_BASE-URL=a",
+		"EVEPRAISAL_SSO_CLIENT_SECRET_FILE=/run/secrets/x",
+		"EVEPRAISAL_BASE-URL_FILE=/run/secrets/y",
+		"EVEPRAISAL_TYPO=hunter2",
+		"EVEPRAISAL_EMPTY=",
+	}
+	got := findUnknownEnvNames(environ)
+	if strings.Join(got, ",") != "EVEPRAISAL_BASE-URL_FILE,EVEPRAISAL_TYPO" {
+		t.Errorf("findUnknownEnvNames() = %q, want [EVEPRAISAL_BASE-URL_FILE EVEPRAISAL_TYPO]", got)
+	}
+}
+
+func TestConfigureEnvWarnsUnknownVariable(t *testing.T) {
+	clearEvepraisalEnv(t)
+	t.Setenv("EVEPRAISAL_TYPO", "hunter2")
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	if err := configureEnv(viper.New()); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if strings.Count(got, "WARN") != 1 || !strings.Contains(got, "name=EVEPRAISAL_TYPO") || strings.Contains(got, "hunter2") {
+		t.Errorf("log = %q, want one WARN naming EVEPRAISAL_TYPO without its value", got)
+	}
+}
+
+// collectViperKeys returns the keys passed as string literals to viper.Get*,
+// IsSet and SetDefault in file, and the positions of calls with any other key.
+func collectViperKeys(fset *token.FileSet, file *ast.File) (keys, nonLiteral []string) {
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if pkgIdent, ok := sel.X.(*ast.Ident); !ok || pkgIdent.Name != "viper" {
+			return true
+		}
+		if !strings.HasPrefix(sel.Sel.Name, "Get") && sel.Sel.Name != "SetDefault" && sel.Sel.Name != "IsSet" {
+			return true
+		}
+		if sel.Sel.Name == "GetViper" {
+			return true
+		}
+		lit, ok := call.Args[0].(*ast.BasicLit)
+		key, err := "", error(nil)
+		if ok && lit.Kind == token.STRING {
+			key, err = strconv.Unquote(lit.Value)
+		}
+		if !ok || lit.Kind != token.STRING || err != nil {
+			nonLiteral = append(nonLiteral, fmt.Sprintf("%s: viper.%s with a non-literal key", fset.Position(call.Pos()), sel.Sel.Name))
+			return true
+		}
+		keys = append(keys, key)
+		return true
+	})
+	return keys, nonLiteral
+}
+
+func TestCollectViperKeysReportsNonLiteralKey(t *testing.T) {
+	src := "package p\nfunc f(name string) { viper.GetString(\"a\"); viper.GetBool(name) }\n"
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, nonLiteral := collectViperKeys(fset, file)
+	if strings.Join(keys, ",") != "a" || len(nonLiteral) != 1 || !strings.HasPrefix(nonLiteral[0], "p.go:2:") {
+		t.Errorf("collectViperKeys() = %q, %q, want [a] and one problem at p.go:2", keys, nonLiteral)
 	}
 }
 
@@ -251,32 +378,13 @@ func TestConfigKeysCoverViperReads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ast.Inspect(file, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok || len(call.Args) == 0 {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if pkgIdent, ok := sel.X.(*ast.Ident); !ok || pkgIdent.Name != "viper" {
-				return true
-			}
-			if !strings.HasPrefix(sel.Sel.Name, "Get") && sel.Sel.Name != "SetDefault" && sel.Sel.Name != "IsSet" {
-				return true
-			}
-			lit, ok := call.Args[0].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				return true
-			}
-			key, err := strconv.Unquote(lit.Value)
-			if err != nil {
-				t.Fatal(err)
-			}
+		keys, nonLiteral := collectViperKeys(fset, file)
+		for _, problem := range nonLiteral {
+			t.Error(problem)
+		}
+		for _, key := range keys {
 			read[key] = true
-			return true
-		})
+		}
 	}
 	listed := map[string]bool{}
 	for _, key := range configKeys {

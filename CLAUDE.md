@@ -53,8 +53,10 @@ Environment variables exist only for keys in `configKeys`
 (`evepraisal/env_config.go`); viper's `AutomaticEnv` is not used. A new key
 needs a row there and in the README key table, otherwise
 `TestConfigKeysCoverViperReads` or `TestReadmeListsEnvNames` fails. The scan
-sees only string literals passed to `viper.Get*`/`SetDefault`: a key built at
-run time escapes it and silently has no environment variable.
+accepts only string literals passed to `viper.Get*`/`IsSet`/`SetDefault` and
+fails on any other key argument; reads through a `*viper.Viper` value are not
+scanned. Tests that read the environment start with `clearEvepraisalEnv(t)`,
+otherwise an exported `EVEPRAISAL_*` of the caller changes their result.
 
 ## Verbatim test data
 

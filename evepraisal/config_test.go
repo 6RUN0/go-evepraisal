@@ -46,6 +46,7 @@ func TestMarketFetchIntervalFromInt(t *testing.T) {
 }
 
 func TestMarketFetchIntervalFromEnv(t *testing.T) {
+	clearEvepraisalEnv(t)
 	t.Setenv("EVEPRAISAL_MARKET-FETCH-INTERVAL", "10")
 	t.Cleanup(func() { viper.Set("market-fetch-interval", nil) })
 	if err := configureEnv(viper.GetViper()); err != nil {

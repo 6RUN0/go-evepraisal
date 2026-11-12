@@ -82,13 +82,18 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   both set to different values stop the start with `Invalid environment`.
 - `<variable>_FILE` reads a key from a file, for Docker or compose secrets
   (`EVEPRAISAL_COOKIE_AUTH_KEY_FILE=/run/secrets/cookie_auth_key`); one
-  trailing line ending is removed. A variable and its `_FILE` both set, or an
-  unreadable file, stop the start. See "Environment variables" in
-  `README.md`.
+  trailing line ending is removed. A variable and its `_FILE` both set, an
+  unreadable file, or an empty file for `db_path`, `backup_path`,
+  `market-fetch-interval` or `http_redirect` stop the start. See
+  "Environment variables" in `README.md`.
+- An `EVEPRAISAL_*` variable that matches no key logs
+  `WARN: Unknown environment variable ignored name=<variable>` at start.
 - The startup settings log lists keys set only through the environment too,
-  in key order; `cookie-auth-key`, `cookie-encryption-key`,
-  `sso-client-secret` and `newrelic_license-key` appear as `<set>` or
-  `<unset>` instead of `MASKED`.
+  in key order, TOML table keys as `<table>.<key>`. Values of
+  `cookie-auth-key`, `cookie-encryption-key`, `sso-client-secret`,
+  `newrelic_license-key` and of any key whose name contains `key`, `secret`,
+  `password` or `token` appear as `<set>` or `<unset>` instead of `MASKED`;
+  the four named keys are listed even when unset.
 
 ### Fixed
 
