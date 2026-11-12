@@ -3,7 +3,6 @@ package staticdump
 import (
 	"archive/zip"
 	"encoding/csv"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,54 +11,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/evepraisal/go-evepraisal"
 	"github.com/evepraisal/go-evepraisal/typedb"
 	"github.com/sethgrid/pester"
 )
-
-var userAgent = "go-evepraisal"
-
-func FindLastStaticDumpUrl(client *pester.Client) (string, error) {
-	return "https://eve-static-data-export.s3-eu-west-1.amazonaws.com/tranquility/sde.zip", nil
-}
-
-// FindLastStaticDumpChecksum returns the URL of the last eve static data dump
-func FindLastStaticDumpChecksum(client *pester.Client) (string, error) {
-	req, err := http.NewRequest("GET", "https://eve-static-data-export.s3-eu-west-1.amazonaws.com/tranquility/checksum", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Add("User-Agent", userAgent)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	log.Println("Checksum Body:", string(body), resp.StatusCode)
-
-	switch resp.StatusCode {
-	case 200, 304:
-		lines := strings.Split(string(body), "\n")
-		for _, line := range lines {
-			if strings.Contains(line, "sde.zip") {
-				parts := strings.Fields(line)
-				if len(parts) > 0 {
-					return parts[0], nil
-				}
-			}
-		}
-		return "", errors.New("Checksum for sde.zip not found")
-	case 404:
-		return "", errors.New("Could not find latest static dump checksum (404)")
-	default:
-		return "", fmt.Errorf("Unexpected response when trying to find last static dump checksum: %s", resp.Status)
-	}
-}
 
 func downloadTypes(client *pester.Client, staticDumpURL string, staticDataPath string) error {
 	out, err := os.Create(staticDataPath)
@@ -75,7 +30,7 @@ func downloadTypes(client *pester.Client, staticDumpURL string, staticDataPath s
 		return err
 	}
 
-	req.Header.Add("User-Agent", userAgent)
+	req.Header.Add("User-Agent", evepraisal.UserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -268,7 +223,7 @@ func downloadTypeVolumes(client *pester.Client) (map[int64]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Add("User-Agent", userAgent)
+	req.Header.Add("User-Agent", evepraisal.UserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -311,7 +266,7 @@ func downloadPackagedVolumes(client *pester.Client) (map[int64]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Add("User-Agent", userAgent)
+	req.Header.Add("User-Agent", evepraisal.UserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {

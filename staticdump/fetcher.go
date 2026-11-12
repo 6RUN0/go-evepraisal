@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -19,6 +20,8 @@ type StaticFetcher struct {
 	callback func(typeDB typedb.TypeDB)
 	client   *pester.Client
 
+	manifestURL string
+
 	stop chan bool
 	wg   *sync.WaitGroup
 }
@@ -29,6 +32,8 @@ func NewStaticFetcher(client *pester.Client, dbPath string, callback func(typeDB
 		dbPath:   dbPath,
 		callback: callback,
 		client:   client,
+
+		manifestURL: DefaultManifestURL,
 
 		stop: make(chan bool),
 		wg:   &sync.WaitGroup{},
@@ -64,22 +69,18 @@ func NewStaticFetcher(client *pester.Client, dbPath string, callback func(typeDB
 
 // RunOnce will fetch, parse and call the callback with a fresh type database
 func (f *StaticFetcher) RunOnce() error {
-	staticDumpChecksum, err := FindLastStaticDumpChecksum(f.client)
+	dump, err := FindLatestStaticDump(f.client, f.manifestURL)
 	if err != nil {
 		// TODO: fallback to previously downloaded static data
-		return fmt.Errorf("error fetching static dump checksum: %w", err)
+		return fmt.Errorf("finding latest static dump: %w", err)
 	}
 
-	staticDumpURL, err := FindLastStaticDumpUrl(f.client)
-	if err != nil {
-		// TODO: fallback to previously downloaded static data
-		return fmt.Errorf("error fetching static data: %w", err)
-	}
+	log.Println("Latest Static Dump", dump.URL, dump.BuildNumber)
 
-	log.Println("Latest Static Dump URL", staticDumpURL, staticDumpChecksum)
-
-	typedbPath := filepath.Join(f.dbPath, "types-"+staticDumpChecksum)
-	typedbCachePath := filepath.Join(f.dbPath, "types-"+staticDumpChecksum+".zip")
+	build := strconv.FormatInt(dump.BuildNumber, 10)
+	staticDumpURL := dump.URL
+	typedbPath := filepath.Join(f.dbPath, "types-"+build)
+	typedbCachePath := filepath.Join(f.dbPath, "types-"+build+".zip")
 	if _, err = os.Stat(typedbPath); os.IsNotExist(err) {
 		err = f.loadTypes(typedbPath, typedbCachePath, staticDumpURL)
 		if err != nil {

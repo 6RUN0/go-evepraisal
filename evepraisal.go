@@ -9,6 +9,9 @@ import (
 	newrelic "github.com/newrelic/go-agent/v3/newrelic"
 )
 
+// UserAgent is sent with every outgoing HTTP request (SDE manifest, ESI).
+var UserAgent = "go-evepraisal (+https://github.com/6RUN0/go-evepraisal)"
+
 // App holds references to all of the app state that's needed. This is typically created in the 'evepraisal' package.
 type App struct {
 	AppraisalDB         AppraisalDB
