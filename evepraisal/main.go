@@ -35,6 +35,11 @@ func main() {
 		}
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		healthcheckMain()
+		return
+	}
+
 	buf := bytes.NewBufferString("Config settings\n")
 	w := tabwriter.NewWriter(buf, 0, 0, 1, ' ', 0)
 	for k, v := range viper.AllSettings() {

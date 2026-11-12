@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/evepraisal/go-evepraisal"
@@ -32,7 +33,7 @@ import (
 
 func appMain() {
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	log.Println("Starting price DB")
 	priceDB, err := bolt.NewPriceDB(filepath.Join(viper.GetString("db_path"), "prices"))

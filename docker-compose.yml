@@ -1,13 +1,13 @@
-version: '3.3'
 services:
   evepraisal:
-    container_name: evepraisal
-    build:
-      context: ./
-      dockerfile: Dockerfile
-    ports:
-      - 8080:8080
-      - 8081:8081
+    build: .
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    ports: ["8080:8080"]
     volumes:
-      - ./evepraisal.toml:/evepraisal/evepraisal.toml
-    restart: always
+      - ./data:/data
+      - ./evepraisal.toml:/etc/evepraisal/evepraisal.toml:ro
+    restart: unless-stopped
