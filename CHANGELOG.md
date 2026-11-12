@@ -70,6 +70,11 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   (robots, favicon, branding, status link, price freshness).
 - The service stops cleanly on SIGTERM (`docker stop`), not only on SIGINT;
   compose waits 20 seconds (`stop_grace_period`) before SIGKILL.
+- A published image `ghcr.io/6run0/go-evepraisal` for `linux/amd64`, built
+  after `make check` passes: `X.Y.Z`, `X.Y` and `latest` from tags `vX.Y.Z`,
+  `edge` and `sha-<commit>` from every push to `master`. Each image carries an
+  SBOM and a provenance attestation, verifiable with `gh attestation verify`;
+  see "Published image" in `README.md`.
 
 ### Fixed
 

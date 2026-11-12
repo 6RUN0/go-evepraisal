@@ -62,6 +62,53 @@ instead.
    The `STATUS` column reads `Up ... (healthy)`. On an empty data directory
    this takes minutes, see [First start](#first-start-on-an-empty-data-directory).
 
+### Published image
+
+Instead of building in step 4, the service can run the image CI publishes to
+`ghcr.io/6run0/go-evepraisal` (`linux/amd64` only). The clone is still needed
+for `docker-compose.yml` and `evepraisal.toml`. In `docker-compose.yml`
+replace `build: .` with the image and a tag from the table:
+
+```yaml
+services:
+  evepraisal:
+    image: ghcr.io/6run0/go-evepraisal:1.2.3
+```
+
+Then start without `--build`:
+
+```sh
+docker compose up -d
+```
+
+| Tag | Points to | Changes |
+| --- | --- | --- |
+| `X.Y.Z` | release tag `vX.Y.Z` | never |
+| `X.Y` | newest `X.Y.*` release | on each patch release |
+| `latest` | newest release | on each release |
+| `edge` | newest commit on `master`, not a release | on every push to `master` |
+| `sha-<commit>` | that `master` commit (7-character short SHA) | never |
+
+An image is pushed only after `make check` passes on that commit. `edge`
+carries unreleased commits; pin an `X.Y.Z` tag in production (`1.2.3` above
+is an example).
+
+Verify that an image was built by this repository's CI from the source it
+names (needs the GitHub CLI):
+
+```sh
+gh attestation verify oci://ghcr.io/6run0/go-evepraisal:1.2.3 -R 6RUN0/go-evepraisal
+```
+
+The command exits with status 0 and prints the workflow and commit that
+built the image; a non-zero exit means the image did not come from this
+repository's CI or its attestation is missing. The image also carries BuildKit provenance and an
+SBOM:
+
+```sh
+docker buildx imagetools inspect ghcr.io/6run0/go-evepraisal:1.2.3 --format '{{ json .SBOM }}'
+```
+
 ### Logs
 
 The service writes its log to stderr, one line per event:
@@ -345,6 +392,18 @@ For an installation made from this repository:
 git pull
 docker compose up -d --build
 ```
+
+For an installation running the [published image](#published-image), set the
+new tag in `image:` of `docker-compose.yml`, then:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+To roll back, set the previous tag and run the same commands. `edge`
+follows `master` without a tag change: `docker compose pull` fetches the
+newest commit.
 
 The data directory is reused as is. To roll back, check out the previous
 commit and run the same `docker compose up -d --build`. Every commit since
