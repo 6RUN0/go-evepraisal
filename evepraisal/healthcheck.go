@@ -25,15 +25,23 @@ func healthcheckURL(httpAddr string) (string, error) {
 	return "http://" + net.JoinHostPort("127.0.0.1", port) + "/robots.txt", nil
 }
 
-// checkHealth GETs url with healthcheckTimeout; nil only for status 200.
+// checkHealth GETs url with healthcheckTimeout; nil for status 200 or a
+// redirect. Redirects are not followed: with http_redirect the target is
+// https:// on the plain HTTP port, which can never answer.
 func checkHealth(url string) error {
-	client := &http.Client{Timeout: healthcheckTimeout}
+	client := &http.Client{
+		Timeout: healthcheckTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	resp, err := client.Get(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	isRedirect := resp.StatusCode >= 300 && resp.StatusCode < 400
+	if resp.StatusCode != http.StatusOK && !isRedirect {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
 	return nil

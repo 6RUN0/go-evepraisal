@@ -12,5 +12,5 @@ WORKDIR /data
 ENV EVEPRAISAL_DB_PATH=/data/db/ EVEPRAISAL_BACKUP_PATH=/data/db/backups/
 VOLUME /data
 EXPOSE 8080
-HEALTHCHECK --start-period=10s CMD ["/usr/local/bin/evepraisal", "healthcheck"]
+HEALTHCHECK --start-period=15m CMD ["/usr/local/bin/evepraisal", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/evepraisal"]

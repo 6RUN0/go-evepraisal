@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -77,5 +78,22 @@ func TestCheckHealthUnreachable(t *testing.T) {
 	l.Close()
 	if err := checkHealth("http://" + addr + "/robots.txt"); err == nil {
 		t.Fatal("checkHealth: want connection error")
+	}
+}
+
+// TestCheckHealthRedirectIsHealthy pins that with http_redirect=true the probe
+// takes the 307 as healthy instead of following it to https:// on an HTTP port.
+func TestCheckHealthRedirectIsHealthy(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Redirect(w, r, "https://"+r.Host+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	if err := checkHealth(srv.URL + "/robots.txt"); err != nil {
+		t.Fatalf("checkHealth: %v, want nil for a 307", err)
+	}
+	if n := requests.Load(); n != 1 {
+		t.Errorf("requests = %d, want 1 (redirect not followed)", n)
 	}
 }

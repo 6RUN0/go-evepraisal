@@ -1,9 +1,13 @@
 package main
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/evepraisal/go-evepraisal/bolt"
 )
@@ -38,5 +42,41 @@ func TestPrepareDataDirsFreshDataDir(t *testing.T) {
 	}
 	if err := priceDB.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestShutdownHTTPServerWaitsForRequests pins that the shutdown budget starts
+// at the stop signal, so an in-flight request completes instead of being cut.
+func TestShutdownHTTPServerWaitsForRequests(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		time.Sleep(300 * time.Millisecond)
+		_, _ = io.WriteString(w, "done")
+	}))
+	defer srv.Close()
+
+	type result struct {
+		body string
+		err  error
+	}
+	got := make(chan result, 1)
+	go func() {
+		resp, err := http.Get(srv.URL)
+		if err != nil {
+			got <- result{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		got <- result{body: string(body), err: err}
+	}()
+	<-started
+
+	shutdownHTTPServer(srv.Config, 5*time.Second)
+
+	r := <-got
+	if r.err != nil || r.body != "done" {
+		t.Fatalf("in-flight request = %q, %v; want done", r.body, r.err)
 	}
 }

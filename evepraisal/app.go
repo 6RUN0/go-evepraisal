@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -228,17 +227,7 @@ func appMain() {
 	}
 
 	for _, server := range servers {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer func() {
-			err := server.Shutdown(stopCtx)
-			if err != nil {
-				fmt.Printf("Error: shutting down HTTP server: %s", err)
-			}
-		}()
-		go func() {
-			time.Sleep(10 * time.Second)
-			cancel()
-		}()
+		defer shutdownHTTPServer(server, httpShutdownTimeout)
 	}
 
 	startEnvironmentWatchers(app)
@@ -260,6 +249,19 @@ func appMain() {
 
 	<-stop
 	log.Println("Shutting down")
+}
+
+// httpShutdownTimeout bounds how long in-flight requests may run after a stop signal.
+const httpShutdownTimeout = 10 * time.Second
+
+// shutdownHTTPServer stops server and lets in-flight requests finish within
+// timeout, counted from the call so the full budget is left at shutdown.
+func shutdownHTTPServer(server *http.Server, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("Error: shutting down HTTP server: %s", err)
+	}
 }
 
 // prepareDataDirs creates db_path and backup_path: a fresh bind mount over
