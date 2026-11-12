@@ -110,16 +110,6 @@ func (f *StaticFetcher) Close() error {
 }
 
 func (f *StaticFetcher) loadTypes(typedbPath, staticCacheFile string, staticDumpURL string) error {
-	volumes, err := downloadTypeVolumes(f.client)
-	if err != nil {
-		return err
-	}
-
-	packagedVolumes, err := downloadPackagedVolumes(f.client)
-	if err != nil {
-		return err
-	}
-
 	// avoid re-downloading the entire static dump if we already have it
 	if _, err := os.Stat(staticCacheFile); os.IsNotExist(err) {
 		log.Printf("Downloading static dump to %s", staticCacheFile)
@@ -175,18 +165,7 @@ func (f *StaticFetcher) loadTypes(typedbPath, staticCacheFile string, staticDump
 		}
 
 		chunk := make([]typedb.EveType, len(types[i:end]))
-		for i, t := range types[i:end] {
-			volume, ok := volumes[t.ID]
-			if ok {
-				t.Volume = volume
-			}
-
-			packagedVolume, ok := packagedVolumes[t.ID]
-			if ok {
-				t.PackagedVolume = packagedVolume
-			}
-			chunk[i] = t
-		}
+		copy(chunk, types[i:end])
 
 		err = typeDB.PutTypes(chunk)
 		if err != nil {

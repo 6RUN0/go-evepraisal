@@ -2,13 +2,12 @@ package staticdump
 
 import (
 	"archive/zip"
-	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/evepraisal/go-evepraisal"
@@ -50,70 +49,80 @@ func downloadTypes(client *pester.Client, staticDumpURL string, staticDataPath s
 	return nil
 }
 
-// Type is an eve online type
+// Type is an eve online type as stored in types.jsonl.
 type Type struct {
-	GroupID       int64 `yaml:"groupID"`
-	MarketGroupID int64 `yaml:"marketGroupID"`
+	ID            int64 `json:"_key"`
+	GroupID       int64 `json:"groupID"`
+	MarketGroupID int64 `json:"marketGroupID"`
 	Name          struct {
-		En string
-	}
-	Published bool
-	Volume    float64
-	BasePrice float64
+		En string `json:"en"`
+	} `json:"name"`
+	Published      bool    `json:"published"`
+	Volume         float64 `json:"volume"`
+	PackagedVolume float64 `json:"packagedVolume"`
+	BasePrice      float64 `json:"basePrice"`
 }
 
-// Blueprint is an eve online blueprint
+// BlueprintItem is a material or product line of a blueprint activity.
+type BlueprintItem struct {
+	Quantity int64 `json:"quantity"`
+	TypeID   int64 `json:"typeID"`
+}
+
+// Blueprint is an eve online blueprint as stored in blueprints.jsonl.
 type Blueprint struct {
-	BlueprintTypeID int64 `yaml:"blueprintTypeID"`
+	BlueprintTypeID int64 `json:"blueprintTypeID"`
 	Activities      struct {
 		Manufacturing struct {
-			Materials []struct {
-				Quantity int64
-				TypeID   int64 `yaml:"typeID"`
-			}
-			Products []struct {
-				Quantity int64
-				TypeID   int64 `yaml:"typeID"`
-			}
-		}
-	}
+			Materials []BlueprintItem `json:"materials"`
+			Products  []BlueprintItem `json:"products"`
+		} `json:"manufacturing"`
+	} `json:"activities"`
 }
 
 func loadtypes(staticDataPath string) ([]typedb.EveType, error) {
 	r, err := zip.OpenReader(staticDataPath)
 	if err != nil {
-		return nil, fmt.Errorf("unzip static data: %w (staticDataPath)", err)
+		return nil, fmt.Errorf("unzip static data %s: %w", staticDataPath, err)
 	}
 	defer r.Close()
 
-	var allTypes map[int64]Type
-	err = loadDataFromZipFile(r, "fsd/types.yaml", &allTypes)
+	var allTypes []Type
+	err = forEachJSONLine(r, "types.jsonl", func(_ int, line []byte) error {
+		var t Type
+		if err := json.Unmarshal(line, &t); err != nil {
+			return err
+		}
+		allTypes = append(allTypes, t)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
 	log.Printf("Loaded %d types", len(allTypes))
 
-	var allBlueprints map[int64]Blueprint
-	err = loadDataFromZipFile(r, "fsd/blueprints.yaml", &allBlueprints)
+	// File order, so that "first blueprint of a product" is deterministic.
+	blueprintsByProductType := make(map[int64][]Blueprint)
+	blueprintCount := 0
+	err = forEachJSONLine(r, "blueprints.jsonl", func(_ int, line []byte) error {
+		var bp Blueprint
+		if err := json.Unmarshal(line, &bp); err != nil {
+			return err
+		}
+		blueprintCount++
+		for _, product := range bp.Activities.Manufacturing.Products {
+			blueprintsByProductType[product.TypeID] = append(blueprintsByProductType[product.TypeID], bp)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Loaded %d blueprints", len(allBlueprints))
+	log.Printf("Loaded %d blueprints", blueprintCount)
 
-	blueprintsByProductType := make(map[int64][]Blueprint)
-	for _, blueprint := range allBlueprints {
-		for _, product := range blueprint.Activities.Manufacturing.Products {
-			blueprints, ok := blueprintsByProductType[product.TypeID]
-			if ok {
-				blueprintsByProductType[product.TypeID] = append(blueprints, blueprint)
-			} else {
-				blueprintsByProductType[product.TypeID] = []Blueprint{blueprint}
-			}
-		}
-	}
-
-	types := make([]typedb.EveType, 0)
-	for typeID, t := range allTypes {
+	types := make([]typedb.EveType, 0, len(allTypes))
+	for _, t := range allTypes {
+		typeID := t.ID
 
 		// Yep, there is at least one type that isn't named.
 		if t.Name.En == "" {
@@ -126,6 +135,7 @@ func loadtypes(staticDataPath string) ([]typedb.EveType, error) {
 			MarketGroupID:     t.MarketGroupID,
 			Name:              strings.TrimSpace(t.Name.En),
 			Volume:            t.Volume,
+			PackagedVolume:    t.PackagedVolume,
 			BasePrice:         t.BasePrice,
 			Aliases:           []string{},
 			BlueprintProducts: resolveBlueprintProducts(blueprintsByProductType, typeID),
@@ -208,97 +218,4 @@ func resolveBaseComponents(blueprintsByProductType map[int64][]Blueprint, typeID
 		}
 	}
 	return components
-}
-
-func parseVolume(s string) (float64, error) {
-	// if s == "0E-10" {
-	// 	return 0, nil
-	// }
-
-	return strconv.ParseFloat(s, 64)
-}
-
-func downloadTypeVolumes(client *pester.Client) (map[int64]float64, error) {
-	req, err := http.NewRequest("GET", "https://www.fuzzwork.co.uk/dump/latest/invTypes.csv", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Add("User-Agent", evepraisal.UserAgent)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	r := csv.NewReader(resp.Body)
-
-	_, err = r.Read()
-	if err != nil {
-		return nil, err
-	}
-	volumes := map[int64]float64{}
-	for {
-		record, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-
-		typeID, err := strconv.ParseInt(record[0], 10, 64)
-		if err != nil {
-			return nil, err
-		}
-
-		vol, err := parseVolume(record[5])
-		if err != nil {
-			return nil, err
-		}
-
-		volumes[typeID] = vol
-	}
-	return volumes, nil
-}
-
-func downloadPackagedVolumes(client *pester.Client) (map[int64]float64, error) {
-	req, err := http.NewRequest("GET", "https://www.fuzzwork.co.uk/dump/latest/invVolumes.csv", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Add("User-Agent", evepraisal.UserAgent)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	r := csv.NewReader(resp.Body)
-	_, err = r.Read()
-	if err != nil {
-		return nil, err
-	}
-	volumes := map[int64]float64{}
-	for {
-		record, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-
-		typeID, err := strconv.ParseInt(record[0], 10, 64)
-		if err != nil {
-			return nil, err
-		}
-
-		vol, err := parseVolume(record[1])
-		if err != nil {
-			return nil, err
-		}
-
-		volumes[typeID] = vol
-	}
-	return volumes, nil
 }

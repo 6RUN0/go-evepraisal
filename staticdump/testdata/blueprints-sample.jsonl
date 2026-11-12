@@ -1,0 +1,2 @@
+{"_key": 11135, "activities": {"copying": {"time": 4800}, "manufacturing": {"materials": [{"quantity": 2778, "typeID": 34}], "products": [{"quantity": 1, "typeID": 11134}], "skills": [{"level": 1, "typeID": 3380}], "time": 6000}, "research_material": {"time": 2100}, "research_time": {"time": 2100}}, "blueprintTypeID": 11135, "maxProductionLimit": 30}
+{"_key": 935, "activities": {"copying": {"time": 4800}, "research_material": {"time": 2100}, "research_time": {"time": 2100}}, "blueprintTypeID": 935, "maxProductionLimit": 30}

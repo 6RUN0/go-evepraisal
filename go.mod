@@ -30,7 +30,6 @@ require (
 	github.com/stretchr/testify v1.8.1
 	golang.org/x/crypto v0.6.0
 	golang.org/x/oauth2 v0.5.0
-	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
