@@ -5,9 +5,17 @@ Evepraisal is a bulk-price estimator for Eve Online.
 
 Requirements: Docker with the compose plugin.
 
-1. Put `Dockerfile`, `docker-compose.yml` and `evepraisal.toml` into one
-directory.
-2. Create the data directory and give it to the container user (UID 65532):
+1. Clone the repository and run every command below from its root: the image
+   is built from the full source tree, and `docker-compose.yml` and
+   `evepraisal.toml` live there.
+
+   ```sh
+   git clone <URL of this repository> evepraisal
+   cd evepraisal
+   ```
+
+2. Create the data directory and give it to the container user (UID 65532).
+   The service creates `db/` and `db/backups/` inside it on start:
 
    ```sh
    mkdir data && sudo chown 65532:65532 data
@@ -19,6 +27,11 @@ directory.
    docker compose up -d --build
    ```
 
+On an empty data directory the first start downloads the EVE static data
+export and builds the type database before the HTTP server listens, which
+takes several minutes. The image healthcheck therefore has a 15-minute start
+period: until then a failed probe does not mark the container unhealthy.
+
 Layout inside the container:
 
 - `/data` is the only writable path (bind-mounted from `./data`). Databases
@@ -26,12 +39,18 @@ Layout inside the container:
 - `/etc/evepraisal/evepraisal.toml` is the config file, mounted read-only.
 - The root filesystem is read-only and the process runs as UID 65532.
 
-Restore appraisals from a backup file placed under `./data`, with the same
-user and read-only root filesystem:
+Restore appraisals from a backup file placed under `./data` while the service
+is running. The restore command sends the appraisals to the service's
+management server on `127.0.0.1:8090`, which is reachable only inside the
+service container, and reads the service's ready type database without
+building or removing type databases:
 
 ```sh
-docker compose run --rm evepraisal restore -files /data/db/backups/appraisals.gz
+docker compose exec evepraisal evepraisal restore -files /data/db/backups/appraisals.gz
 ```
+
+The restore stops with an error if the service has not finished its first type
+database build yet.
 
 ### Reverse proxy
 
