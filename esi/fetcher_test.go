@@ -651,3 +651,48 @@ func requireNoPauses(t *testing.T, active *atomic.Int32) {
 		t.Errorf("pauses in progress after Close = %d, want 0", n)
 	}
 }
+
+// TestRunOnceContextCancelDuringCCPPricesWritesNothing pins that cancelling
+// p.ctx (fetcherCancel runs before Close) while CCP prices load is a stop:
+// no markets are written without the CCP fallback and no CCP error is logged.
+func TestRunOnceContextCancelDuringCCPPricesWritesNothing(t *testing.T) {
+	market := newMarketServer(t, defaultRegionFixtures(), http.StatusOK, nil)
+	pricesStarted := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/markets/prices" {
+			once.Do(func() { close(pricesStarted) })
+			<-r.Context().Done()
+			return
+		}
+		market.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	p, db := newRunOnceFetcher(srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	logs := captureLog(t)
+
+	done := make(chan struct{})
+	go func() {
+		p.runOnce()
+		close(done)
+	}()
+	select {
+	case <-pricesStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("CCP prices were not requested")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runOnce did not return after the context was cancelled")
+	}
+	if n := len(db.written()); n != 0 {
+		t.Errorf("markets written = %d, want 0 after cancel", n)
+	}
+	if strings.Contains(logs.String(), "CCP") {
+		t.Errorf("log = %q, want no CCP error on stop", logs.String())
+	}
+}

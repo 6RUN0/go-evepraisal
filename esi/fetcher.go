@@ -135,6 +135,20 @@ func (p *PriceFetcher) stopContext() (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
+// isStopping reports whether p.ctx is cancelled or Close was called; a fetch
+// error seen then is the stop itself, not an ESI failure.
+func (p *PriceFetcher) isStopping() bool {
+	if p.ctx.Err() != nil {
+		return true
+	}
+	select {
+	case <-p.stop:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *PriceFetcher) runOnce() {
 	start := time.Now()
 	log.Println("Fetch market data")
@@ -148,6 +162,9 @@ func (p *PriceFetcher) runOnce() {
 	}
 
 	pricesFromCCP, err := p.FetchPriceData(p.client, p.baseURL)
+	if p.isStopping() {
+		return
+	}
 	if err != nil {
 		log.Println("ERROR: fetching CCP price data, skipping the CCP price fallback: ", err)
 	}
@@ -213,10 +230,8 @@ func (p *PriceFetcher) runOnce() {
 
 	for _, market := range markets {
 		// this takes awhile, so let's check to see if we should stop between markets
-		select {
-		case <-p.stop:
+		if p.isStopping() {
 			return
-		default:
 		}
 
 		pmap := priceMap[market]
