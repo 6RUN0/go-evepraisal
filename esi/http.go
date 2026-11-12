@@ -82,9 +82,9 @@ func retryPause(resp *http.Response) time.Duration {
 // budgetPause returns how long to wait after a successful response when
 // ESI reports a nearly exhausted error or rate limit budget.
 func budgetPause(h http.Header) time.Duration {
-	if h.Get("X-From-Cache") == "1" {
-		return 0
-	}
+	// X-From-Cache is deliberately not an exception: httpcache also sets it on a 304
+	// revalidation that carries fresh limits. A stale pause after a pure cache hit costs
+	// at most rateBudgetPause, a skipped fresh limit can exhaust the budget.
 	var pause time.Duration
 	if remain, err := strconv.Atoi(h.Get("X-Esi-Error-Limit-Remain")); err == nil && remain < errorBudgetFloor {
 		if d, ok := headerSeconds(h, "X-Esi-Error-Limit-Reset"); ok {

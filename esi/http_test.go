@@ -115,7 +115,7 @@ func TestFetchRetryAfterMissingHeader(t *testing.T) {
 
 func TestFetchRetryAfterHTTPDate(t *testing.T) {
 	pauses := stubSleep(t)
-	date := time.Now().Add(3 * time.Second).UTC().Format(http.TimeFormat)
+	date := time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat)
 	srv, _ := scriptedServer(t,
 		step{status: 429, header: map[string]string{"Retry-After": date}},
 		step{body: "[]"},
@@ -126,8 +126,8 @@ func TestFetchRetryAfterHTTPDate(t *testing.T) {
 	if len(*pauses) != 1 {
 		t.Fatalf("sleeps = %v, want one", *pauses)
 	}
-	if d := (*pauses)[0]; d < 2*time.Second || d > 4*time.Second {
-		t.Errorf("pause = %v, want about 3s", d)
+	if d := (*pauses)[0]; d < 8*time.Second || d > 10*time.Second {
+		t.Errorf("pause = %v, want between 8s and 10s (HTTP-date has 1s resolution)", d)
 	}
 }
 
@@ -227,7 +227,7 @@ func TestFetchNoRateHeadersNoSleep(t *testing.T) {
 	requireSleeps(t, pauses)
 }
 
-func TestFetchCachedResponseSkipsBudget(t *testing.T) {
+func TestFetchCachedResponseAppliesBudget(t *testing.T) {
 	pauses := stubSleep(t)
 	srv, _ := scriptedServer(t, step{body: "[]", header: map[string]string{
 		"X-From-Cache":          "1",
@@ -236,7 +236,7 @@ func TestFetchCachedResponseSkipsBudget(t *testing.T) {
 	if _, err := fetchOnce(t, srv.URL); err != nil {
 		t.Fatal(err)
 	}
-	requireSleeps(t, pauses)
+	requireSleeps(t, pauses, rateBudgetPause)
 }
 
 func TestFetchPauseIsCancelledByContext(t *testing.T) {
