@@ -28,59 +28,69 @@ type MarketOrder struct {
 	Range         string  `json:"range"`
 }
 
-// SpecialRegions defines which regions we care about
+// SpecialRegions defines which markets we care about and the region each one lives in
 var SpecialRegions = []struct {
 	name     string
+	regionID int
 	stations []int64
 	systems  []int64
 }{
 	{
-		// regionID: 10000002
-		name:    "jita",
-		systems: []int64{30000142},
+		name:     "jita",
+		regionID: 10000002,
+		systems:  []int64{30000142},
 	}, {
-		// regionID: 10000002
-		name:    "perimeter",
-		systems: []int64{30000144},
+		name:     "perimeter",
+		regionID: 10000002,
+		systems:  []int64{30000144},
 	}, {
-		// regionID: 10000043
 		name:     "amarr",
+		regionID: 10000043,
 		stations: []int64{60008950, 60002569, 60008494},
 		systems:  []int64{30003491},
 	}, {
-		// regionID: 10000032
 		name:     "dodixie",
+		regionID: 10000032,
 		stations: []int64{60011866, 60001867},
 		systems:  []int64{30002661},
 	}, {
-		// regionID: 10000042
 		name:     "hek",
+		regionID: 10000042,
 		stations: []int64{60005236, 60004516, 60015140, 60005686, 60011287, 60005236},
 	}, {
-		// regionID: 10000030
-		name:    "rens",
-		systems: []int64{30002510, 30002526},
+		name:     "rens",
+		regionID: 10000030,
+		systems:  []int64{30002510, 30002526},
 	},
 }
 
+// defaultRegionIDs are the regions polled every cycle.
+// 10000027 has no market of its own and feeds "universe" only.
+var defaultRegionIDs = []int{10000002, 10000027, 10000030, 10000032, 10000042, 10000043}
+
 // PriceFetcher fetches prices and populates the given priceDB
 type PriceFetcher struct {
-	db      evepraisal.PriceDB
-	client  *pester.Client
-	baseURL string
+	db        evepraisal.PriceDB
+	client    *pester.Client
+	baseURL   string
+	regionIDs []int
 
 	ctx  context.Context
 	stop chan bool
 	wg   *sync.WaitGroup
 }
 
-// NewPriceFetcher returns a new PriceFetcher
-func NewPriceFetcher(ctx context.Context, priceDB evepraisal.PriceDB, baseURL string, client *pester.Client) (*PriceFetcher, error) {
+// NewPriceFetcher returns a new PriceFetcher that refreshes prices every interval
+func NewPriceFetcher(ctx context.Context, priceDB evepraisal.PriceDB, baseURL string, client *pester.Client, interval time.Duration) (*PriceFetcher, error) {
+	if interval <= 0 {
+		return nil, fmt.Errorf("price fetch interval must be positive, got %s", interval)
+	}
 
 	p := &PriceFetcher{
-		db:      priceDB,
-		client:  client,
-		baseURL: NormalizeBaseURL(baseURL),
+		db:        priceDB,
+		client:    client,
+		baseURL:   NormalizeBaseURL(baseURL),
+		regionIDs: defaultRegionIDs,
 
 		ctx:  ctx,
 		stop: make(chan bool),
@@ -94,7 +104,7 @@ func NewPriceFetcher(ctx context.Context, priceDB evepraisal.PriceDB, baseURL st
 			start := time.Now()
 			p.runOnce()
 			select {
-			case <-time.After((30 * time.Minute) - time.Since(start)):
+			case <-time.After(interval - time.Since(start)):
 			case <-p.stop:
 				return
 			}
@@ -111,58 +121,97 @@ func (p *PriceFetcher) Close() error {
 	return nil
 }
 
-func regionNames() []string {
-	regions := make([]string, len(SpecialRegions)+1)
-	regions[0] = "universe"
-	for i, region := range SpecialRegions {
-		regions[i+1] = region.name
-	}
-	return regions
+// stopContext returns a context that is cancelled by p.ctx or by Close,
+// so requests and rate limit pauses end on either.
+func (p *PriceFetcher) stopContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(p.ctx)
+	go func() {
+		select {
+		case <-p.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 func (p *PriceFetcher) runOnce() {
+	start := time.Now()
 	log.Println("Fetch market data")
-	priceMap, err := p.FetchOrderData(p.client, p.baseURL, []int{10000002, 10000027, 10000030, 10000032, 10000042, 10000043})
+	priceMap, failed, err := p.FetchOrderData(p.client, p.baseURL, p.regionIDs)
 	if err != nil {
 		log.Println("ERROR: fetching market data: ", err)
 		return
 	}
+	if len(failed) > 0 {
+		log.Printf("ERROR: %d of %d regions failed, keeping the previous prices of their markets and universe", len(failed), len(p.regionIDs))
+	}
 
 	pricesFromCCP, err := p.FetchPriceData(p.client, p.baseURL)
 	if err != nil {
-		log.Println("ERROR: fetching CCP price data: ", err)
-		return
+		log.Println("ERROR: fetching CCP price data, skipping the CCP price fallback: ", err)
 	}
 
-	for _, regionName := range regionNames() {
+	// Without a fresh universe the fallback uses the stored one; it went through
+	// the CCP fallback in its own cycle, like a fresh one does below.
+	universe, haveUniverse := priceMap["universe"]
+	previousUniverse := make(map[int64]evepraisal.Prices)
+	universePrice := func(typeID int64) (evepraisal.Prices, bool) {
+		if haveUniverse {
+			price, ok := universe[typeID]
+			return price, ok
+		}
+		if price, ok := previousUniverse[typeID]; ok {
+			return price, true
+		}
+		price, ok := p.db.GetPrice("universe", typeID)
+		if ok {
+			previousUniverse[typeID] = price
+		}
+		return price, ok
+	}
+
+	// universe goes first so the other markets fall back on it after its CCP fallback
+	markets := make([]string, 0, len(priceMap))
+	if haveUniverse {
+		markets = append(markets, "universe")
+	}
+	for market := range priceMap {
+		if market != "universe" {
+			markets = append(markets, market)
+		}
+	}
+
+	for _, market := range markets {
+		marketPrices := priceMap[market]
 		// Use CCP's price if our regional price is too low
 		for typeID, prices := range pricesFromCCP {
-			p, ok := priceMap[regionName][typeID]
+			p, ok := marketPrices[typeID]
 			if !ok || p.Sell.Volume < 10 {
-				priceMap[regionName][typeID] = prices
+				marketPrices[typeID] = prices
 			}
 		}
 
 		// Use the universe price if our regional price is too low (override CCP's price)
-		for typeID, p := range priceMap[regionName] {
+		for typeID, p := range marketPrices {
 			if p.Sell.Volume < 2 {
-				universePrice, ok := priceMap["universe"][typeID]
-				if ok && universePrice.Sell.Volume >= 2 {
-					universePrice.Strategy = "orders_universe"
-					priceMap[regionName][typeID] = universePrice
+				fallback, ok := universePrice(typeID)
+				if ok && fallback.Sell.Volume >= 2 {
+					fallback.Strategy = "orders_universe"
+					marketPrices[typeID] = fallback
 				}
 			}
 
-			if regionName != "universe" && p.Buy.Volume > 0 && p.Sell.Volume > 0 && p.Buy.Max > p.Sell.Min {
+			if market != "universe" && p.Buy.Volume > 0 && p.Sell.Volume > 0 && p.Buy.Max > p.Sell.Min {
 				delta := p.Buy.Max - p.Sell.Min
 				if delta > 1000000 {
-					log.Printf("MARKET: Prices are wack for %d in %s", typeID, regionName)
+					log.Printf("MARKET: Prices are wack for %d in %s", typeID, market)
 				}
 			}
 		}
 	}
 
-	for market, pmap := range priceMap {
+	for _, market := range markets {
 		// this takes awhile, so let's check to see if we should stop between markets
 		select {
 		case <-p.stop:
@@ -170,15 +219,15 @@ func (p *PriceFetcher) runOnce() {
 		default:
 		}
 
-		items := make([]evepraisal.MarketItemPrices, len(pmap))
-		i := 0
+		pmap := priceMap[market]
+		items := make([]evepraisal.MarketItemPrices, 0, len(pmap))
 		for typeID, prices := range pmap {
-			items[i] = evepraisal.MarketItemPrices{
+			prices.Updated = start
+			items = append(items, evepraisal.MarketItemPrices{
 				Market: market,
 				TypeID: typeID,
 				Prices: prices,
-			}
-			i++
+			})
 		}
 
 		err = p.db.UpdatePrices(items)
@@ -189,25 +238,18 @@ func (p *PriceFetcher) runOnce() {
 	log.Println("Done fetching market data")
 }
 
-func (p *PriceFetcher) freshPriceMap() map[string]map[int64]evepraisal.Prices {
-	priceMap := make(map[string]map[int64]evepraisal.Prices)
-	for _, region := range SpecialRegions {
-		priceMap[region.name] = make(map[int64]evepraisal.Prices)
-	}
-	priceMap["universe"] = make(map[int64]evepraisal.Prices)
-	return priceMap
-}
-
 // FetchPriceData fetches CCP's pricing information for every type
 func (p *PriceFetcher) FetchPriceData(client *pester.Client, baseURL string) (map[int64]evepraisal.Prices, error) {
 	start := time.Now()
+	ctx, cancel := p.stopContext()
+	defer cancel()
 	url := fmt.Sprintf("%s/markets/prices", baseURL)
 	esiPrices := make([]struct {
 		TypeID        int64   `json:"type_id"`
 		AveragePrice  float64 `json:"average_price"`
 		AdjustedPrice float64 `json:"adjusted_price"`
 	}, 0)
-	_, err := fetchURL(p.ctx, client, url, &esiPrices)
+	_, err := fetchURL(ctx, client, url, &esiPrices)
 	if err != nil {
 		return nil, err
 	}
@@ -236,93 +278,115 @@ func (p *PriceFetcher) FetchPriceData(client *pester.Client, baseURL string) (ma
 	return allPrices, nil
 }
 
-// FetchOrderData concurrently fetches from each region that we care about
-func (p *PriceFetcher) FetchOrderData(client *pester.Client, baseURL string, regionIDs []int) (map[string]map[int64]evepraisal.Prices, error) {
-	allOrdersByType := make(map[int64][]MarketOrder)
-	finished := make(chan bool, 1)
-	workerStop := make(chan bool, 1)
-	errChannel := make(chan error, 1)
-	fetchStart := time.Now()
-
-	l := &sync.Mutex{}
-	requestAndProcess := func(url string) (pageInfo, error) {
+// fetchRegionOrders fetches every page of one region; on error the orders
+// fetched so far are returned with it and must not be used.
+func fetchRegionOrders(ctx context.Context, client *pester.Client, baseURL string, regionID int) ([]MarketOrder, int, error) {
+	var all []MarketOrder
+	pages := 1
+	fetched := 0
+	for page := 1; page <= pages; page++ {
+		if err := ctx.Err(); err != nil {
+			return all, fetched, err
+		}
+		url := fmt.Sprintf("%s/markets/%d/orders?order_type=all&page=%d", baseURL, regionID, page)
 		var orders []MarketOrder
-		info, err := fetchURL(p.ctx, client, url, &orders)
+		info, err := fetchURL(ctx, client, url, &orders)
 		if err != nil {
-			return pageInfo{}, err
+			return all, fetched, fmt.Errorf("Failed to fetch market orders: %s (%s)", err, url)
 		}
-
-		l.Lock()
-		for _, order := range orders {
-			allOrdersByType[order.Type] = append(allOrdersByType[order.Type], order)
+		fetched++
+		all = append(all, orders...)
+		if page == 1 {
+			pages = info.Pages
 		}
-		l.Unlock()
-		return info, nil
 	}
+	return all, fetched, nil
+}
 
+// FetchOrderData concurrently fetches from each region that we care about.
+// prices holds only markets whose region was requested and succeeded; "universe"
+// only when all requested regions succeeded. failed maps each failed region to its error.
+// err is set when the fetch was stopped or its context cancelled.
+func (p *PriceFetcher) FetchOrderData(client *pester.Client, baseURL string, regionIDs []int) (prices map[string]map[int64]evepraisal.Prices, failed map[int]error, err error) {
+	fetchStart := time.Now()
+	ctx, cancel := p.stopContext()
+	defer cancel()
+
+	type regionResult struct {
+		orders []MarketOrder
+		err    error
+	}
+	results := make([]regionResult, len(regionIDs))
 	wg := &sync.WaitGroup{}
-	for _, regionID := range regionIDs {
+	for i, regionID := range regionIDs {
 		wg.Add(1)
-		go func(regionID int) {
+		go func() {
 			defer wg.Done()
-			pages := 1
-			for page := 1; page <= pages; page++ {
-				select {
-				case <-workerStop:
-					return
-				default:
-				}
-
-				url := fmt.Sprintf("%s/markets/%d/orders?order_type=all&page=%d", baseURL, regionID, page)
-				info, err := requestAndProcess(url)
-				if err != nil {
-					errChannel <- fmt.Errorf("Failed to fetch market orders: %s (%s)", err, url)
-					return
-				}
-				if page == 1 {
-					pages = info.Pages
-				}
+			regionStart := time.Now()
+			orders, pages, err := fetchRegionOrders(ctx, client, baseURL, regionID)
+			errText := ""
+			if err != nil {
+				errText = err.Error()
 			}
-		}(regionID)
+			log.Printf("region=%d pages=%d orders=%d duration=%s error=%q", regionID, pages, len(orders), time.Since(regionStart).Round(time.Millisecond), errText)
+			results[i] = regionResult{orders: orders, err: err}
+		}()
 	}
-
-	go func() {
-		wg.Wait()
-		close(finished)
-	}()
+	// Workers end on their own: every request and pause watches ctx, which Close cancels.
+	wg.Wait()
 
 	select {
-	case <-finished:
 	case <-p.stop:
-		close(workerStop)
-		return nil, errors.New("Stopping during price fetch")
-	case err := <-errChannel:
-		if err != nil {
-			close(workerStop)
-			return nil, err
+		return nil, nil, errors.New("Stopping during price fetch")
+	default:
+	}
+	if err := p.ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	failed = make(map[int]error)
+	succeeded := make(map[int]bool)
+	allOrdersByType := make(map[int64][]MarketOrder)
+	for i, regionID := range regionIDs {
+		if results[i].err != nil {
+			failed[regionID] = results[i].err
+			continue
+		}
+		succeeded[regionID] = true
+		for _, order := range results[i].orders {
+			allOrdersByType[order.Type] = append(allOrdersByType[order.Type], order)
 		}
 	}
 
 	log.Println("Performing aggregates on order data")
 	// Calculate aggregates that we care about:
-	newPriceMap := p.freshPriceMap()
+	newPriceMap := make(map[string]map[int64]evepraisal.Prices)
+	for _, region := range SpecialRegions {
+		if succeeded[region.regionID] {
+			newPriceMap[region.name] = make(map[int64]evepraisal.Prices)
+		}
+	}
+	haveUniverse := len(failed) == 0
+	if haveUniverse {
+		newPriceMap["universe"] = make(map[int64]evepraisal.Prices)
+	}
 	for k, orders := range allOrdersByType {
 		for _, region := range SpecialRegions {
+			if !succeeded[region.regionID] {
+				continue
+			}
 			filteredOrders := make([]MarketOrder, 0)
-			ordercount := 0
 			for _, order := range orders {
 				matched := false
 				for _, station := range region.stations {
 					if station == order.StationID {
 						matched = true
-						ordercount++
 						break
 					}
 				}
 				for _, system := range region.systems {
 					if system == order.SystemID {
 						matched = true
-						ordercount++
 						break
 					}
 				}
@@ -335,12 +399,14 @@ func (p *PriceFetcher) FetchOrderData(client *pester.Client, baseURL string, reg
 			agg.Strategy = "orders"
 			newPriceMap[region.name][k] = agg
 		}
-		agg := getPriceAggregatesForOrders(orders)
-		agg.Updated = fetchStart
-		newPriceMap["universe"][k] = agg
+		if haveUniverse {
+			agg := getPriceAggregatesForOrders(orders)
+			agg.Updated = fetchStart
+			newPriceMap["universe"][k] = agg
+		}
 	}
 
 	log.Println("Finished performing aggregates on order data")
 
-	return newPriceMap, nil
+	return newPriceMap, failed, nil
 }

@@ -33,6 +33,11 @@ import (
 )
 
 func appMain() {
+	fetchInterval, err := marketFetchInterval()
+	if err != nil {
+		log.Fatalf("Invalid config: %s", err)
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
@@ -71,7 +76,7 @@ func appMain() {
 	httpClient.LogHook = func(e pester.ErrEntry) { log.Println(httpClient.FormatError(e)) }
 
 	fetcherCtx, fetcherCancel := context.WithCancel(context.Background())
-	priceFetcher, err := esi.NewPriceFetcher(fetcherCtx, priceDB, viper.GetString("esi_baseurl"), httpClient)
+	priceFetcher, err := esi.NewPriceFetcher(fetcherCtx, priceDB, viper.GetString("esi_baseurl"), httpClient, fetchInterval)
 	if err != nil {
 		log.Fatalf("Couldn't start price fetcher: %s", err)
 	}

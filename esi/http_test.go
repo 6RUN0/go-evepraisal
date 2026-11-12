@@ -49,7 +49,7 @@ func TestFetchRequestShape(t *testing.T) {
 	t.Cleanup(srv.Close)
 	p := newTestFetcher(srv.URL)
 
-	if _, err := p.FetchOrderData(p.client, srv.URL, []int{10000002}); err != nil {
+	if _, _, err := p.FetchOrderData(p.client, srv.URL, []int{10000002}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := p.FetchPriceData(p.client, srv.URL); err != nil {

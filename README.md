@@ -66,6 +66,7 @@ the file.
 | `db_path` | `db/` (`/data/db/` in the image) | Directory of the databases |
 | `backup_path` | `db/backups/` (`/data/db/backups/` in the image) | Directory of appraisal backups |
 | `esi_baseurl` | `https://esi.evetech.net` | ESI base URL; a trailing `/latest` is stripped with a warning |
+| `market-fetch-interval` | `30` | Minutes between market price refreshes, a whole number; zero, a negative value or a non-number stops the start |
 | `newrelic_app-name` | `Evepraisal` | New Relic application name |
 | `newrelic_license-key` | empty | New Relic license key; empty disables New Relic |
 | `management_addr` | `127.0.0.1:8090` | Listen address of the management server |

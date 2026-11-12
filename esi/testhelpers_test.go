@@ -26,11 +26,12 @@ func newTestClient() *pester.Client {
 // newTestFetcher builds a PriceFetcher without starting the background loop.
 func newTestFetcher(baseURL string) *PriceFetcher {
 	return &PriceFetcher{
-		client:  newTestClient(),
-		baseURL: baseURL,
-		ctx:     context.Background(),
-		stop:    make(chan bool),
-		wg:      &sync.WaitGroup{},
+		client:    newTestClient(),
+		baseURL:   baseURL,
+		regionIDs: defaultRegionIDs,
+		ctx:       context.Background(),
+		stop:      make(chan bool),
+		wg:        &sync.WaitGroup{},
 	}
 }
 

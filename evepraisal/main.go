@@ -24,8 +24,7 @@ func main() {
 	viper.SetConfigName("evepraisal")
 	viper.AddConfigPath("/etc/evepraisal/")
 	viper.AddConfigPath(".")
-	viper.SetEnvPrefix("evepraisal")
-	viper.AutomaticEnv()
+	configureEnv()
 	err := viper.ReadInConfig()
 	if err != nil {
 		switch err.(type) {
