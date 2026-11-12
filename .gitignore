@@ -41,5 +41,7 @@
 !/reflex.test.conf
 !/LICENSE
 !/README.md
+!/CHANGELOG.md
+!/CLAUDE.md
 
 bindata.go

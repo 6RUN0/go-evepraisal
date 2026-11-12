@@ -1,135 +1,565 @@
 # Evepraisal
-Evepraisal is a bulk-price estimator for Eve Online.
 
-## Docker Instructions (production)
+Evepraisal is a bulk-price estimator for EVE Online: paste a cargo scan,
+contract, fitting, inventory listing and similar text, get the market value of
+the items. This repository is a fork of
+[evepraisal/go-evepraisal](https://github.com/evepraisal/go-evepraisal); it
+loads item types from CCP's JSONL static data export (SDE), reads market
+orders from the dated ESI API and ships as a non-root container image.
+Changes against upstream are listed in [CHANGELOG.md](CHANGELOG.md).
 
-Requirements: Docker with the compose plugin.
+This file covers running the service (Docker), its configuration, data and
+operations, then building from source.
+
+## Install with Docker
+
+Requirements: Docker with the compose plugin and outbound HTTPS to these
+hosts:
+
+| Host | Needed for |
+| --- | --- |
+| `esi.evetech.net` | market orders and CCP prices, always |
+| `developers.eveonline.com` | SDE manifest and archive, always |
+| `login.eveonline.com` | token exchange and verification, with `sso-client-id` |
+| `acme-v02.api.letsencrypt.org` | certificates, with `https_addr` |
+| New Relic collector hosts | metrics, with `newrelic_license-key` |
+
+Upgrading an installation made with the upstream compose file: follow
+[Migrate from the upstream compose file](#migrate-from-the-upstream-compose-file)
+instead.
 
 1. Clone the repository and run every command below from its root: the image
    is built from the full source tree, and `docker-compose.yml` and
    `evepraisal.toml` live there.
 
    ```sh
-   git clone <URL of this repository> evepraisal
+   git clone https://github.com/6RUN0/go-evepraisal.git evepraisal
    cd evepraisal
    ```
 
-2. Create the data directory and give it to the container user (UID 65532).
+2. Set `base-url` in `evepraisal.toml` to the public URL of the site (see
+   [Configuration](#configuration)).
+
+3. Create the data directory and give it to the container user (UID 65532).
    The service creates `db/` and `db/backups/` inside it on start:
 
    ```sh
    mkdir data && sudo chown 65532:65532 data
    ```
 
-3. Start the service:
+4. Start the service:
 
    ```sh
    docker compose up -d --build
    ```
 
-On an empty data directory the first start downloads the EVE static data
-export and builds the type database before the HTTP server listens, which
-takes several minutes. The image healthcheck therefore has a 15-minute start
-period: until then a failed probe does not mark the container unhealthy.
+5. Wait until the container is healthy:
 
-Layout inside the container:
+   ```sh
+   docker compose ps
+   ```
 
-- `/data` is the only writable path (bind-mounted from `./data`). Databases
-  live in `/data/db/`, backups in `/data/db/backups/`.
-- `/etc/evepraisal/evepraisal.toml` is the config file, mounted read-only.
-- The root filesystem is read-only and the process runs as UID 65532.
+   The `STATUS` column reads `Up ... (healthy)`. On an empty data directory
+   this takes minutes, see [First start](#first-start-on-an-empty-data-directory).
 
-Restore appraisals from a backup file placed under `./data` while the service
-is running. The restore command sends the appraisals to the service's
-management server on `127.0.0.1:8090`, which is reachable only inside the
-service container, and reads the service's ready type database without
-building or removing type databases:
+### Logs
+
+The service writes its log to stderr, one line per event:
 
 ```sh
-docker compose exec evepraisal evepraisal restore -files /data/db/backups/appraisals.gz
+docker compose logs -f evepraisal
 ```
 
-The restore stops with an error if the service has not finished its first type
-database build yet.
+Docker keeps the log with its configured logging driver; the service itself
+writes no log files and does no rotation.
+
+### Container layout
+
+| Path | Mode | Content |
+| --- | --- | --- |
+| `/data` | writable, bind mount of `./data` | databases in `/data/db/`, backups in `/data/db/backups/` |
+| `/etc/evepraisal/evepraisal.toml` | read-only, bind mount of `./evepraisal.toml` | config file |
+| `/tmp` | tmpfs, 16 MB | scratch space |
+| everything else | read-only root filesystem | distroless static image, no shell, no curl |
+
+The process runs as UID 65532 with all capabilities dropped, so it cannot
+bind ports below 1024 inside the container. Compose publishes port 8080 on
+all host interfaces; to reach it only through a reverse proxy, change `ports`
+to `["127.0.0.1:8080:8080"]`.
+
+The image sets `EVEPRAISAL_DB_PATH=/data/db/` and
+`EVEPRAISAL_BACKUP_PATH=/data/db/backups/`. The environment overrides the
+config file, so `db_path` and `backup_path` in the mounted `evepraisal.toml`
+have no effect inside the container.
+
+The appraisal database maps its file size plus 2 GB of virtual memory at
+start (`bolt/appraisal_db.go`). Resident memory is lower, but a limit on
+virtual memory (`ulimit -v`, `vm.overcommit_memory = 2`) can stop the start
+(read from the code, not measured).
 
 ### Reverse proxy
 
-Behind Angie or nginx, pass the client address and disable response buffering
-(needed for server-sent events):
+Behind Angie or nginx pass the `Host` header and the client address (the
+access log takes it from `X-Real-Ip`, then `X-Forwarded-For`, then the TCP
+peer):
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_set_header Host $host;
+    proxy_set_header X-Real-Ip $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_buffering off;
 }
 ```
 
+When the proxy terminates TLS, keep `http_redirect = false`: the service
+cannot tell a proxied HTTPS request from a plain one and would redirect every
+request to `https://` again, an endless loop.
+
+### HTTPS without a proxy
+
+The service can terminate TLS itself with Let's Encrypt certificates
+(HTTP-01 challenge). Preconditions, none of which the default compose file
+meets:
+
+- `https_addr` set to a port above 1024, for example `:8443`;
+- the host's port 443 published to it and port 80 published to `http_addr`
+  (`ports: ["80:8080", "443:8443"]`), both reachable from the internet: the
+  challenge is answered only on the HTTP port;
+- `https_domain-whitelist` set to the site's domain names, and DNS pointing
+  to the host.
+
+Certificates are stored in `<db_path>/certs/`. A failed issuance shows up
+only as a TLS handshake error in the browser and in the service log; the
+service keeps running.
+
+`http_redirect = true` replaces the challenge handler on the HTTP port with
+the redirect (read from the code). Whether issuance still succeeds through
+that redirect was not tested: get the first certificate with
+`http_redirect = false`.
+
 ## Configuration
 
-Keys are read from `evepraisal.toml` (the working directory or
-`/etc/evepraisal/`). Each key can also be set through the environment:
-upper-case it, prefix `EVEPRAISAL_`, keep the characters as they are, for
-example `base-url` becomes `EVEPRAISAL_BASE-URL`. The environment overrides
-the file.
+Keys are read from `evepraisal.toml`, searched in `/etc/evepraisal/` first,
+then in the working directory. A missing file is not an error: the service
+logs `No config file found, using defaults searched_paths=["/etc/evepraisal/" "."]`.
+Any other problem with the file (a syntax error, no read permission) stops
+the start with `Invalid config file: <path>: <reason>`.
 
-| Key | Default | Purpose |
+On start the service logs the keys that have a default or appear in the
+file; values of keys whose name contains `key` or `secret` are printed as
+`MASKED`. Keys set only through the environment and without a default
+(`cookie-*`, `sso-client-*`) are not listed.
+
+Each key can also be set through the environment: upper-case it, prefix
+`EVEPRAISAL_`, keep `-` and `_` as they are. `base-url` becomes
+`EVEPRAISAL_BASE-URL`, `db_path` becomes `EVEPRAISAL_DB_PATH`. The
+environment overrides the file. An empty variable counts as unset: the file
+or the default applies. A list value is space-separated:
+`EVEPRAISAL_HTTPS_DOMAIN-WHITELIST="example.org www.example.org"`. A shell
+`export` rejects names with `-`; set them in the compose `environment:` list
+or with `env 'EVEPRAISAL_BASE-URL=https://example.org' evepraisal`.
+
+All values are read once at start; a change needs a restart. The table
+follows `evepraisal/config.go` and the `viper.Get*` calls; re-check it when a
+key is added there.
+
+| Key | Default | Effect |
 | --- | --- | --- |
-| `base-url` | `http://127.0.0.1:8080` | Public URL of the site; used for links and the SSO callback |
-| `http_addr` | `:8080` | Listen address of the HTTP server |
-| `http_redirect` | `false` | Redirect HTTP to HTTPS |
-| `https_addr` | empty | Listen address of the HTTPS server; empty disables HTTPS |
-| `https_domain-whitelist` | `["evepraisal.com"]` | Domains for which Let's Encrypt certificates are requested |
+| `base-url` | `http://127.0.0.1:8080` | Public URL of the site; used for links and the SSO callback `<base-url>/oauthcallback` |
+| `http_addr` | `:8080` | Listen address of the HTTP server; empty disables it, and then `healthcheck` always fails |
+| `http_redirect` | `false` | `true` answers every HTTP request with a 307 to the same host and path on `https://`; only for `https_addr`, never behind a TLS-terminating proxy |
+| `https_addr` | empty | Listen address of the HTTPS server with Let's Encrypt certificates; empty disables HTTPS; see [HTTPS without a proxy](#https-without-a-proxy) |
+| `https_domain-whitelist` | `["evepraisal.com"]` | Domains for which certificates are requested |
 | `letsencrypt_email` | empty | Contact e-mail for Let's Encrypt |
-| `db_path` | `db/` (`/data/db/` in the image) | Directory of the databases |
-| `backup_path` | `db/backups/` (`/data/db/backups/` in the image) | Directory of appraisal backups |
-| `esi_baseurl` | `https://esi.evetech.net` | ESI base URL; a trailing `/latest` is stripped with a warning |
-| `market-fetch-interval` | `30` | Minutes between market price refreshes, a whole number; zero, a negative value or a non-number stops the start |
+| `db_path` | `db/` (`/data/db/` in the image) | Directory of the databases, created on start |
+| `backup_path` | `db/backups/` (`/data/db/backups/` in the image) | Directory of `appraisals.gz` written by the management API, created on start |
+| `esi_baseurl` | `https://esi.evetech.net` | ESI base URL; one trailing `/latest`, `/v1` or `/legacy` is stripped with a `WARN` log line |
+| `market-fetch-interval` | `30` | Minutes between the starts of two market price refreshes, a whole number above zero. Anything else in the file (`0`, `-5`, `10m`, `1.5`, `""`) stops the start with `Invalid config: market-fetch-interval must be a whole number of minutes above zero, got "<value>"` |
+| `management_addr` | `127.0.0.1:8090` | Listen address of the management API, see [Management API](#management-api) |
 | `newrelic_app-name` | `Evepraisal` | New Relic application name |
 | `newrelic_license-key` | empty | New Relic license key; empty disables New Relic |
-| `management_addr` | `127.0.0.1:8090` | Listen address of the management server |
 | `site-name` | `Evepraisal` | Site name in the navbar and page titles |
 | `source-url` | `https://github.com/evepraisal/go-evepraisal` | Source repository; the footer links to it and to its `/issues` |
-| `about-contacts-html` | the four upstream contact items | HTML of the contact list on the about page, inserted unescaped |
-| `favicon-path` | empty | Icon file served at `/favicon.ico`; empty serves the built-in icon; an unreadable file stops the start |
+| `about-contacts-html` | the four upstream contact items | HTML of the contact list on `/about`, inserted unescaped |
+| `favicon-path` | empty | File served at `/favicon.ico`; empty serves the built-in icon; an unreadable file stops the start |
 | `extra-html-header` | empty | HTML added to the page head |
 | `extra-js` | empty | JavaScript added to every page |
 | `ad-block` | empty | HTML of the ad block |
-| `extra-static-file-path` | empty | Directory of extra static files, served at their path relative to it |
-| `cookie-auth-key` | none | Session cookie signing key; random on every start if unset |
-| `cookie-encryption-key` | none | Session cookie encryption key |
-| `sso-client-id` | none | EVE SSO client ID; empty disables login |
-| `sso-client-secret` | none | EVE SSO client secret |
+| `extra-static-file-path` | empty | Directory of extra files, each served at its path relative to the directory (`<dir>/a/b.txt` at `/a/b.txt`). A symlink to a directory is followed. A missing path, a file instead of a directory, or any error walking the tree (such as an unreadable subdirectory) stops the start with `Invalid config: extra-static-file-path "<path>": <reason>`. Files are read into memory on start; files added later are not served until a restart |
+| `cookie-auth-key` | empty | Session cookie signing key; empty generates a random key on every start, which logs every user out on restart |
+| `cookie-encryption-key` | empty | Session cookie encryption key, used only with `cookie-auth-key`: empty means signed but unencrypted cookies, otherwise 16, 24 or 32 bytes (AES); another length stops the start with `Invalid config: cookie-encryption-key must be empty or 16, 24 or 32 bytes, got <n>` |
+| `sso-client-id` | empty | EVE SSO client ID; empty disables login: `/login` answers `SSO is not configured` |
+| `sso-client-secret` | empty | EVE SSO client secret |
 | `sso-authorize-url` | `https://login.eveonline.com/oauth/authorize` | SSO authorize endpoint |
 | `sso-token-url` | `https://login.eveonline.com/oauth/token` | SSO token endpoint |
 | `sso-verify-url` | `https://login.eveonline.com/oauth/verify` | SSO verify endpoint |
 
-## Instructions (development)
-The following was tested on Ubuntu Server 18.10
-- Install golang 1.11
+## Data directory
+
+Everything lives under `db_path` (`./data/db/` on the host with the compose
+file). Directories are created with mode 0700 and files with 0600, owned by
+UID 65532: on the host, reading them needs `sudo`. Files are bolt databases,
+each opened by one process at a time.
+
+| Name | Content | Safe to delete |
+| --- | --- | --- |
+| `appraisals` | all appraisals and user history | **no: the only copy of user data** |
+| `prices` | aggregated market prices | with the service stopped; refilled by the first market refresh after start, until then appraisals show no prices |
+| `httpcache` | cached ESI responses | with the service stopped; rebuilt on demand |
+| `types-<build>` | item types of SDE build `<build>` | with the service stopped; then the next start rebuilds it, see [First start](#first-start-on-an-empty-data-directory) |
+| `types-<build>.index` | search index of the same build | only together with `types-<build>` |
+| `types-<build>.zip` | the downloaded SDE archive, reused if the build has to be rebuilt | yes |
+| `types-<build>.partial*`, `types-<build>.zip.download` | an unfinished build or download | yes; removed on start |
+| `certs/` | Let's Encrypt certificates, only with `https_addr` | with the service stopped; certificates are requested again, subject to Let's Encrypt rate limits |
+| `backups/appraisals.gz` | output of `/backup-to-file/appraisals` | yes |
+
+After a newer type DB is in use the service removes all other `types-*`
+entries. A `types-<md5>` name is a type DB built by upstream Evepraisal; it is
+served until the first numeric build is ready, then removed.
+
+## Operations
+
+### First start on an empty data directory
+
+With no ready type DB under `db_path` the service downloads the SDE archive
+and builds the type DB before the HTTP server listens. The archive is about
+100 MB (a code comment, not measured here); the build takes minutes,
+depending on bandwidth and disk (not measured). The image healthcheck has a
+15-minute start period: until then a failed probe does not mark the container
+unhealthy.
+
+The download has 600 seconds per attempt and two attempts, 2 seconds apart.
+Below about 170 KB/s (100 MB in 600 s) it cannot finish, and every retry
+starts the download from zero.
+
+If the first build fails (CCP unreachable, download too slow, broken
+archive), the service still starts, but recognises no items until a build
+succeeds. It retries after 5 minutes, doubling the pause on each failure up
+to 6 hours. Look for `ERROR: failed to fetch static data from CCP:` in the
+log.
+
+With a ready type DB on disk the service starts at once on it and checks for
+a newer SDE build in the background; it checks again every 6 hours. A failed
+check or build keeps the current type DB and logs
+`ERROR: failed to fetch static data from CCP, keeping the current type DB:`
+for the check right after start, and
+`WARNING: Fetcher failed to run, keeping the current type DB:` for the later
+ones.
+
+### Market prices
+
+Every `market-fetch-interval` minutes the service reads all market orders of
+six regions from ESI and aggregates them into these markets:
+
+| Market | Source |
+| --- | --- |
+| `jita`, `perimeter` | The Forge (10000002), systems Jita and Perimeter |
+| `amarr` | Domain (10000043), Amarr system and three trade hub stations |
+| `dodixie` | Sinq Laison (10000032), Dodixie system and two stations |
+| `hek` | Metropolis (10000042), five Hek stations |
+| `rens` | Heimatar (10000030), Rens and one more system |
+| `universe` | all orders of the five regions above and of region 10000027, which has no market of its own |
+
+Per region and cycle one log line reports the result, for example (values
+illustrative):
+
+```text
+region=10000002 pages=402 orders=401234 duration=1m2.345s error=""
 ```
-  ~$ curl https://dl.google.com/go/go1.11.10.linux-amd64.tar.gz | tar xz
-  ~$ sudo mv go /usr/local
-  ~$ echo 'export GOROOT=/usr/local/go' >>~/.profile
-  ~$ echo 'export GOPATH=$HOME/go' >>~/.profile
-  ~$ echo 'export PATH=$GOPATH/bin:$GOROOT/bin:$PATH' >>~/.profile
-  ~$ echo 'export GO111MODULE=on' >>~/.profile
-  ~$ source ~/.profile
+
+A non-empty `error` means the region failed: its markets keep the previous
+prices, `universe` is not updated in that cycle, and the cycle logs:
+
+```text
+ERROR: 1 of 6 regions failed, keeping the previous prices of their markets and universe
 ```
-- Install build requirements
+
+A cycle that lasts longer than the interval is followed by the next one at
+once.
+
+Each ESI request has a 30-second timeout. A network error or a 5xx answer is
+retried up to 10 attempts with pauses of about 2, 4, 8 ... 512 seconds
+(plus or minus a third), so one failing page can take about 17 minutes
+before its region fails. A 404 counts as an empty page. Any other 4xx except
+420 and 429 fails the region at once.
+
+ESI rate limits are honoured inside a cycle, which makes the cycle longer, not
+failed. Every pause is capped at 5 minutes.
+
+| ESI signal | Pause |
+| --- | --- |
+| 420 or 429 | `Retry-After`, else `X-Esi-Error-Limit-Reset` (420 only), else 1 minute; after the third such answer for one URL its region fails |
+| `X-Esi-Error-Limit-Remain` below 10 | until `X-Esi-Error-Limit-Reset` |
+| `X-Ratelimit-Remaining` below 100 | 1 minute |
+
+Requests carry `X-Compatibility-Date: 2020-01-01`.
+
+### Healthcheck
+
+`evepraisal healthcheck` requests
+`http://127.0.0.1:<port of http_addr>/robots.txt` with a 5-second timeout.
+Exit code 0: status 200 or a redirect (with `http_redirect = true` the probe
+gets a 307 and counts it as healthy). Exit code 1: anything else, with
+`unhealthy: <reason>` on stderr. The image runs it as its `HEALTHCHECK`.
+
+The probe always goes to `127.0.0.1`: with `http_addr` bound to another
+address (`192.0.2.10:8080`) or empty it always fails.
+
+### Verify a running instance
+
+`scripts/verify-instance.sh` checks a deployed site from outside; it needs
+`sh` and `curl`:
+
+```sh
+sh scripts/verify-instance.sh https://example.org 'My Site' 30
 ```
-  ~$ sudo apt install git gcc musl-dev make
+
+| Check | Passes when |
+| --- | --- |
+| `robots` | `/robots.txt` answers 200 |
+| `favicon` | `/favicon.ico` answers 200 |
+| `branding` | `/about` contains the site name given as the second argument |
+| `no-status-link` | `/about` does not link to `status.evepraisal.com` |
+| `prices-fresh` | prices of Tritanium (`/item/34`) are at most interval + 10 minutes old; skipped without the third argument |
+
+Exit code 0: all checks passed. 1: the failed check names follow
+`failed:`. 2: wrong arguments.
+
+### Stop
+
+On SIGTERM (`docker compose stop`) the service gives in-flight requests up
+to 10 seconds per HTTP server, one server after the other. It then waits for
+a running SDE download to end (up to 600 seconds, the download cannot be
+interrupted) and cancels running ESI requests before closing the databases.
+Compose sends SIGKILL after
+20 seconds (`stop_grace_period`). A kill loses no committed data: bolt
+writes each transaction atomically (bolt documentation); an unfinished type
+DB build is removed on the next start.
+
+### Upgrade
+
+For an installation made from this repository:
+
+```sh
+git pull
+docker compose up -d --build
 ```
-- Download and build evepraisal
+
+The data directory is reused as is. To roll back, check out the previous
+commit and run the same `docker compose up -d --build`. Every commit since
+the fork reads the same data directory; rolling back to upstream Evepraisal
+is not supported: its compose file keeps data inside the container, and its
+type DB loader downloads from an S3 URL this fork stopped using, whose
+availability is unknown.
+
+### Migrate from the upstream compose file
+
+The upstream compose file keeps the databases in `/evepraisal/db` inside the
+container `evepraisal`, not on the host. Removing that container loses them,
+so copy them out first. Run from the clone of this repository, with the old
+container still present:
+
+1. Stop the old container and copy its databases out:
+
+   ```sh
+   docker stop evepraisal
+   docker cp evepraisal:/evepraisal/db ./db-upstream
+   ```
+
+   Check: `ls db-upstream` lists `appraisals`. If it does not, stop here;
+   the old container is still intact.
+
+2. Move them into the data directory and hand it to the container user:
+
+   ```sh
+   mkdir data
+   mv db-upstream data/db
+   sudo chown -R 65532:65532 data
+   ```
+
+3. Carry the old config over the clone's `evepraisal.toml`, which compose
+   mounts read-only at `/etc/evepraisal/evepraisal.toml`. Without it the
+   service runs on the sample config: `base-url` is `http://127.0.0.1:8080`,
+   and with no `cookie-auth-key` every restart logs all users out.
+
+   ```sh
+   docker cp evepraisal:/evepraisal/evepraisal.toml ./evepraisal.toml
+   chmod 644 evepraisal.toml
+   ```
+
+   Delete the `db_path` and `backup_path` lines from it: they name the
+   upstream `/evepraisal/db` paths, and the image overrides both through the
+   environment anyway. The file must stay readable by UID 65532; an
+   unreadable one stops the start with `Invalid config file:`.
+
+4. Remove the old container and start the new one:
+
+   ```sh
+   docker rm evepraisal
+   docker compose up -d --build
+   ```
+
+The new service serves the upstream `types-<md5>` type DB until it has built
+its first numeric one, then removes the old one. Until `docker rm`, the old
+container can be started again with `docker start evepraisal`; after it, the
+copy in `data/db` is the only one.
+
+### Back up appraisals
+
+`data/db/appraisals` is the only file that holds user data. Copy it with the
+service stopped: a copy of a bolt file taken while it is written can be
+inconsistent.
+
+```sh
+docker compose stop evepraisal
+sudo cp -p data/db/appraisals "appraisals-$(date +%F)"
+docker compose start evepraisal
 ```
-  ~$ mkdir -p $GOPATH/src/github.com/evepraisal/go-evepraisal
-  ~$ cd $GOPATH/src/github.com/evepraisal/go-evepraisal
-  ~/go/src/github.com/evepraisal/go-evepraisal$ git clone https://github.com/evepraisal/go-evepraisal.git .
-  ~/go/src/github.com/evepraisal/go-evepraisal$ make setup
-  ~/go/src/github.com/evepraisal/go-evepraisal$ make build
+
+The site is down from `stop` until the container answers again; with a type
+DB on disk the start does not wait for a build. To restore, stop the
+service, put the file back and start it:
+
+```sh
+docker compose stop evepraisal
+sudo cp appraisals-2026-11-12 data/db/appraisals
+sudo chown 65532:65532 data/db/appraisals
+docker compose start evepraisal
 ```
-- Run evepraisal
+
+The management API writes a hot backup with `GET /backup-to-file/appraisals`:
+a gzip of the bolt file, written to a temporary file and renamed to
+`<backup_path>/appraisals.gz` only when complete, so a failed run keeps the
+previous backup. With the default compose file the API is reachable only
+from inside the container, and the image has no HTTP client to call it;
+publishing it needs a changed `management_addr` and network setup, and the
+API has no authentication. Restore such a file with
+`gunzip -c appraisals.gz > appraisals` and the restore steps above.
+
+### Import legacy appraisals
+
+`evepraisal restore` imports appraisals exported from the original Python
+Evepraisal: a gzip of a CSV file with a header row. It skips private
+appraisals. It does not read `backups/appraisals.gz`; that file is a bolt
+database, restored as in [Back up appraisals](#back-up-appraisals).
+
+Run it while the service is up and healthy: the command sends each appraisal
+to the management API on `127.0.0.1:8090`, reachable only inside the service
+container, and uses the service's ready type DB without building one. Place
+the files under `./data` first so the container sees them:
+
+```sh
+docker compose exec evepraisal evepraisal restore -files /data/legacy-1.csv.gz,/data/legacy-2.csv.gz
 ```
-  ~/go/src/github.com/evepraisal/go-evepraisal$ ./target/evepraisal-linux-amd64
+
+| Outcome | Exit code | Log |
+| --- | --- | --- |
+| all files read | 0 | `Done restoring: <file> skipped_existing=<n>` per file |
+| no ready type DB yet | 1 | `Couldn't open type DB, start the service and wait for its first type DB` |
+| missing file, unreadable gzip or CSV | 1 | `File path does not exist:` or `Error while importing legacy file:` |
+| missing `-files` | 1 | `The -filenames option is required` |
+
+A row the service rejects does not stop the import: it logs
+`ERROR: <status>: <body>` and goes on, so check the log for `ERROR:` after
+the run. Files listed before a failing one stay imported, and so do the rows
+of the failing file read before the error.
+
+Each appraisal keeps its legacy ID. An ID the database already holds is
+skipped, never overwritten: `/restore` answers `409 Conflict` and the command
+counts it in `skipped_existing`, so running the same import again stores
+nothing new and does not raise the appraisal total. Legacy IDs share the ID
+space with new appraisals; each import moves the ID counter past the highest
+imported ID, so a new appraisal never takes an imported one's ID.
+
+### Management API
+
+Listens on `management_addr` (`127.0.0.1:8090`), without authentication. Do
+not bind it to a public address.
+
+| Route | Effect |
+| --- | --- |
+| `GET /backup/appraisals` | streams the bolt file of the appraisal DB |
+| `GET /backup-to-file/appraisals` | writes a complete gzip of it to `<backup_path>/appraisals.gz`, see [Back up appraisals](#back-up-appraisals) |
+| `POST /restore` | stores one appraisal given as JSON, `409 Conflict` if its ID is taken; used by `evepraisal restore` |
+| `GET /expvar` | Go runtime variables |
+
+## Development
+
+Requirements: Go 1.27 (`go.mod`), GNU make. Dependencies are vendored in
+`vendor/`; Go uses them automatically (vendor mode is the default when
+`vendor/` exists), so building and testing the service needs no network.
+
+### Build and run
+
+```sh
+make build
+./target/evepraisal-linux-amd64
 ```
+
+`make build` defaults to `ENV=dev`, which compiles with `-tags dev`: templates
+and static files are read from `web/resources/` on disk at run time, so start
+the binary from the repository root. A binary that embeds them:
+
+```sh
+make build ENV=prod
+```
+
+With `ENV=prod` the same target builds
+`target/evepraisal-<GOOS>-<GOARCH>` without the `dev` tag.
+
+| Target | Effect |
+| --- | --- |
+| `make run` | installs the binaries into `$GOPATH/bin` and starts `evepraisal` |
+| `make run-reload` | rebuilds and restarts on source changes; needs `reflex` |
+| `make test-reload` | reruns the tests on source changes; needs `reflex` |
+
+### Checks before a commit
+
+```sh
+make check
+```
+
+CI runs the same target. It needs network access on the first run (tool
+modules, the Go vulnerability database, `uvx`) and these programs on `PATH`:
+`git`, `uv`, `hadolint`, `shellcheck`. Go tools are pinned in `tools/go.mod`
+and `tools/actionlint/go.mod`, `rumdl` by version in the `Makefile`.
+
+| Target | Checks |
+| --- | --- |
+| `lint` | `golangci-lint run` and `golangci-lint fmt --diff` (`.golangci.yml`) |
+| `build` | the binary for `ENV`, then `go build ./...` |
+| `test` | `go test -race ./...` with checkptr disabled |
+| `tidy` | `go mod tidy -diff` for the main and tool modules; `vendor/` matches `go mod vendor` |
+| `markdown` | `rumdl check .` (`.rumdl.toml`) and no typographic characters outside data files |
+| `hadolint` | `Dockerfile` |
+| `actionlint` | `.github/workflows/` |
+| `shellcheck` | every `*.sh` outside `vendor/` |
+| `vuln` | `govulncheck ./...`; `make check` only prints its findings, `make vuln` fails on them |
+
+The race detector runs with checkptr disabled, because the vendored
+`github.com/boltdb/bolt` fails it
+(`fatal error: checkptr: converted pointer straddles multiple allocations`).
+
+### Dependencies
+
+After changing imports or `go.mod`, refresh the vendor directory and commit
+it together with `go.mod` and `go.sum`:
+
+```sh
+go mod tidy && go mod vendor
+```
+
+### Ignore files
+
+`.gitignore` and `.dockerignore` deny everything, then re-include what
+belongs. A new file or directory at the repository root stays invisible to
+git until `.gitignore` gets a `!/<name>` line (`!/<name>/` for a directory);
+add it to `.dockerignore` as well if the image build needs it. Check that no
+tracked file is ignored:
+
+```sh
+git ls-files | git check-ignore --stdin --no-index
+```
+
+The command prints nothing when the allowlist is complete.
