@@ -80,7 +80,7 @@ func NewPriceFetcher(ctx context.Context, priceDB evepraisal.PriceDB, baseURL st
 	p := &PriceFetcher{
 		db:      priceDB,
 		client:  client,
-		baseURL: baseURL,
+		baseURL: NormalizeBaseURL(baseURL),
 
 		ctx:  ctx,
 		stop: make(chan bool),
@@ -201,13 +201,13 @@ func (p *PriceFetcher) freshPriceMap() map[string]map[int64]evepraisal.Prices {
 // FetchPriceData fetches CCP's pricing information for every type
 func (p *PriceFetcher) FetchPriceData(client *pester.Client, baseURL string) (map[int64]evepraisal.Prices, error) {
 	start := time.Now()
-	url := fmt.Sprintf("%s/markets/prices/?datasource=tranquility", baseURL)
+	url := fmt.Sprintf("%s/markets/prices", baseURL)
 	esiPrices := make([]struct {
 		TypeID        int64   `json:"type_id"`
 		AveragePrice  float64 `json:"average_price"`
 		AdjustedPrice float64 `json:"adjusted_price"`
 	}, 0)
-	err := fetchURL(p.ctx, client, url, &esiPrices)
+	_, err := fetchURL(p.ctx, client, url, &esiPrices)
 	if err != nil {
 		return nil, err
 	}
@@ -245,15 +245,11 @@ func (p *PriceFetcher) FetchOrderData(client *pester.Client, baseURL string, reg
 	fetchStart := time.Now()
 
 	l := &sync.Mutex{}
-	requestAndProcess := func(url string) (bool, error) {
+	requestAndProcess := func(url string) (pageInfo, error) {
 		var orders []MarketOrder
-		err := fetchURL(p.ctx, client, url, &orders)
+		info, err := fetchURL(p.ctx, client, url, &orders)
 		if err != nil {
-			return false, err
-		}
-
-		if len(orders) == 0 {
-			return false, nil
+			return pageInfo{}, err
 		}
 
 		l.Lock()
@@ -261,7 +257,7 @@ func (p *PriceFetcher) FetchOrderData(client *pester.Client, baseURL string, reg
 			allOrdersByType[order.Type] = append(allOrdersByType[order.Type], order)
 		}
 		l.Unlock()
-		return true, nil
+		return info, nil
 	}
 
 	wg := &sync.WaitGroup{}
@@ -269,25 +265,23 @@ func (p *PriceFetcher) FetchOrderData(client *pester.Client, baseURL string, reg
 		wg.Add(1)
 		go func(regionID int) {
 			defer wg.Done()
-			page := 1
-			for {
+			pages := 1
+			for page := 1; page <= pages; page++ {
 				select {
 				case <-workerStop:
 					return
 				default:
 				}
 
-				url := fmt.Sprintf("%s/markets/%d/orders/?datasource=tranquility&order_type=all&page=%d", baseURL, regionID, page)
-				hasMore, err := requestAndProcess(url)
+				url := fmt.Sprintf("%s/markets/%d/orders?order_type=all&page=%d", baseURL, regionID, page)
+				info, err := requestAndProcess(url)
 				if err != nil {
 					errChannel <- fmt.Errorf("Failed to fetch market orders: %s (%s)", err, url)
 					return
 				}
-
-				if !hasMore {
-					break
+				if page == 1 {
+					pages = info.Pages
 				}
-				page++
 			}
 		}(regionID)
 	}

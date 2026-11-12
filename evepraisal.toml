@@ -16,7 +16,7 @@ backup_path="db/backups/"
 newrelic_app-name="Evepraisal"
 newrelic_license-key=""
 
-esi_baseurl="https://esi.evetech.net/latest"
+esi_baseurl="https://esi.evetech.net"
 sso-authorize-url="https://login.eveonline.com/oauth/authorize"
 sso-verify-url="https://login.eveonline.com/oauth/verify"
 sso-token-url="https://login.eveonline.com/oauth/token"
