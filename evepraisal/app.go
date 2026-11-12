@@ -240,6 +240,9 @@ func appMain() {
 		Addr:    viper.GetString("management_addr"),
 		Handler: management.HTTPHandler(app, filepath.Join(viper.GetString("backup_path"), "appraisals.gz")),
 	}
+	// Deferred after the appraisalDB close, so LIFO stops management before the
+	// databases: a /restore or /backup-to-file in flight must not hit a closed DB.
+	defer shutdownHTTPServer(mgmtServer, httpShutdownTimeout)
 
 	go func() {
 		derr := mgmtServer.ListenAndServe()

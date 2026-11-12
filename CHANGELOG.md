@@ -123,6 +123,12 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   counter moves past every imported ID; a new appraisal could take an
   imported ID and replace it. A repeated import no longer raises the
   appraisal total.
+- `restore` exits 1 when any row was refused by `/restore` (a status other
+  than `409`) or could not be sent; each file logs `failed=<n>` next to
+  `skipped_existing`. Such rows were only logged and the command exited 0.
+- On stop the management API shuts down before the databases close, giving
+  an in-flight `/restore` or `/backup-to-file` the same 10 seconds as the
+  other servers; it kept accepting requests against the closed appraisal DB.
 - A new appraisal never replaces a stored one. On start the ID counter is
   raised to the highest stored ID, which repairs volumes restored by an
   earlier build (logged as `Appraisal sequence raised to stored ID`); a

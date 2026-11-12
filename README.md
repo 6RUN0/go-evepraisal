@@ -591,15 +591,18 @@ docker compose exec evepraisal evepraisal restore -files /data/legacy-1.csv.gz,/
 
 | Outcome | Exit code | Log |
 | --- | --- | --- |
-| all files read | 0 | `Done restoring: <file> skipped_existing=<n>` per file |
+| all files read, every row stored or skipped | 0 | `Done restoring: <file> skipped_existing=<n> failed=0` per file |
+| a row refused or not sent | 1 | `Restore finished with failed appraisals: failed=<n>` after all files |
 | no ready type DB yet | 1 | `Couldn't open type DB, start the service and wait for its first type DB` |
 | missing file, unreadable gzip or CSV | 1 | `File path does not exist:` or `Error while importing legacy file:` |
 | missing `-files` | 1 | `The -filenames option is required` |
 
-A row the service rejects does not stop the import: it logs
-`ERROR: <status>: <body>` and goes on, so check the log for `ERROR:` after
-the run. Files listed before a failing one stay imported, and so do the rows
-of the failing file read before the error.
+A row the service rejects with a status other than `409` does not stop the
+import: it logs `ERROR: <status>: <body>`, counts in `failed` and goes on; a
+row the management API does not answer, as during a service stop, logs
+`Could not save appraisal!` and counts the same way. Any failed row makes the
+command exit 1 once all files are read. Files listed before a failing one stay
+imported, and so do the rows of the failing file read before the error.
 
 Each appraisal keeps its legacy ID. An ID the database already holds is
 skipped, never overwritten: `/restore` answers `409 Conflict` and the command

@@ -52,58 +52,80 @@ func restoreMain() {
 		log.Fatalf("Couldn't open type DB, start the service and wait for its first type DB: %s", err)
 	}
 	log.Println("TypeDB", restoreTypeDB)
-	defer func() {
-		if err := restoreTypeDB.Close(); err != nil {
-			log.Fatalf("Problem closing typeDB: %s", err)
-		}
-	}()
 
-	// skipped counts appraisals whose ID the database already holds (409 from /restore).
-	skipped := 0
-	saver := func(appraisal *evepraisal.Appraisal) error {
-		var (
-			buf bytes.Buffer
-			req *http.Request
-			err error
-		)
-		err = json.NewEncoder(&buf).Encode(appraisal)
-		if err != nil {
-			return err
-		}
-
-		req, err = http.NewRequest("POST", "http://"+viper.GetString("management_addr")+"/restore", &buf)
-		if err != nil {
-			return err
-		}
-
-		req.Header.Add("Content-Type", "application/json")
-
-		var resp *http.Response
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		if resp.StatusCode == http.StatusConflict {
-			skipped++
-		} else if resp.StatusCode != http.StatusOK {
-			var body []byte
-			body, err = io.ReadAll(resp.Body)
-			if err != nil {
-				return err
-			}
-			log.Printf("ERROR: %s: %s", resp.Status, string(body))
-		}
-
-		return resp.Body.Close()
-	}
-
+	saver := newRestoreSaver(http.DefaultClient, "http://"+viper.GetString("management_addr"))
+	failed := 0
 	for _, filename := range filenames {
-		skipped = 0
+		saver.counts = restoreCounts{}
 		log.Printf("Start restoring: %s", filename)
-		err := legacy.RestoreLegacyFile(saver, restoreTypeDB, filename)
+		err := legacy.RestoreLegacyFile(saver.save, restoreTypeDB, filename)
 		if err != nil {
 			log.Fatalf("Error while importing legacy file: %s", err)
 		}
-		log.Printf("Done restoring: %s skipped_existing=%d", filename, skipped)
+		log.Printf("Done restoring: %s skipped_existing=%d failed=%d", filename, saver.counts.skipped, saver.counts.failed)
+		failed += saver.counts.failed
 	}
+
+	if err := restoreTypeDB.Close(); err != nil {
+		log.Fatalf("Problem closing typeDB: %s", err)
+	}
+	if failed > 0 {
+		log.Fatalf("Restore finished with failed appraisals: failed=%d", failed)
+	}
+}
+
+// restoreCounts tallies the outcome of one restored file.
+type restoreCounts struct {
+	// skipped counts appraisals whose ID the database already holds (409 from /restore).
+	skipped int
+	// failed counts appraisals refused with any other non-2xx status or lost to a transport error.
+	failed int
+}
+
+// restoreSaver posts appraisals to the management /restore endpoint.
+type restoreSaver struct {
+	client  *http.Client
+	baseURL string
+	counts  restoreCounts
+}
+
+func newRestoreSaver(client *http.Client, baseURL string) *restoreSaver {
+	return &restoreSaver{client: client, baseURL: baseURL}
+}
+
+// save posts one appraisal. A refused row is logged and counted, not returned,
+// so the import goes on; a transport error is counted and returned.
+func (s *restoreSaver) save(appraisal *evepraisal.Appraisal) error {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(appraisal); err != nil {
+		s.counts.failed++
+		return err
+	}
+
+	req, err := http.NewRequest("POST", s.baseURL+"/restore", &buf)
+	if err != nil {
+		s.counts.failed++
+		return err
+	}
+	req.Header.Add("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		s.counts.failed++
+		return err
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode == http.StatusConflict:
+		s.counts.skipped++
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
+		s.counts.failed++
+		body, rerr := io.ReadAll(resp.Body)
+		if rerr != nil {
+			return rerr
+		}
+		log.Printf("ERROR: %s: %s", resp.Status, string(body))
+	}
+	return nil
 }
