@@ -80,6 +80,11 @@ func NewAppraisalDB(filename string) (evepraisal.AppraisalDB, error) {
 					return fmt.Errorf("raise appraisal bucket sequence: %s", err)
 				}
 			}
+			// Such a key came from an import without the ceiling; new appraisals
+			// fail once the counter would wrap, so say it at start, not per save.
+			if n := binary.BigEndian.Uint64(k); n > maxImportedAppraisalID {
+				log.Printf("WARNING: Appraisal ID above import ceiling highest_id=%d ceiling=%d", n, uint64(maxImportedAppraisalID))
+			}
 		}
 		totalAppraisals = b.Sequence()
 

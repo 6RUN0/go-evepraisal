@@ -172,6 +172,20 @@ func TestPutNewAppraisalRejectsImportNearMaxUint64(t *testing.T) {
 	requireRaw(t, db, stored.ID, "original")
 }
 
+// TestPutNewAppraisalImportCeilingBoundary pins the ceiling itself: an
+// off-by-one there either refuses valid IDs or lets the counter near the wrap.
+func TestPutNewAppraisalImportCeilingBoundary(t *testing.T) {
+	db := newTestAppraisalDB(t)
+	if err := importAppraisal(t, db, maxImportedAppraisalID, "at ceiling"); err != nil {
+		t.Fatalf("import at ceiling: %v", err)
+	}
+	err := importAppraisal(t, db, maxImportedAppraisalID+1, "past ceiling")
+	if !errors.Is(err, errImportedIDOutOfRange) {
+		t.Fatalf("err = %v, want errImportedIDOutOfRange", err)
+	}
+	requireRaw(t, db, evepraisal.Uint64ToAppraisalID(maxImportedAppraisalID), "at ceiling")
+}
+
 // TestPutNewAppraisalRefusesSequenceWrap pins NextSequence wrapping from
 // MaxUint64 to 0, which handed out the oldest IDs again.
 func TestPutNewAppraisalRefusesSequenceWrap(t *testing.T) {
