@@ -130,3 +130,38 @@ func TestVerifyInstanceUnreachable(t *testing.T) {
 		t.Fatalf("exit %d, output:\n%s", code, out)
 	}
 }
+
+// TestVerifyInstancePricesFreshBoundaries pins the prices-fresh limit of
+// interval + 10 minutes (40 at interval 30) and the units the script accepts.
+func TestVerifyInstancePricesFreshBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		item string
+		isOk bool
+	}{
+		{"at limit", "<p>last updated 40 minutes ago.</p>", true},
+		{"past limit", "<p>last updated 41 minutes ago.</p>", false},
+		{"now", "<p>last updated now.</p>", true},
+		{"seconds", "<p>last updated 5 seconds ago.</p>", true},
+		{"days", "<p>last updated 3 days ago.</p>", false},
+		{"no stamp", "<p>no price data</p>", false},
+		{"one of two stale", "<p>updated 5 minutes ago</p><p>updated 41 minutes ago</p>", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := healthyPages()
+			p.item = tc.item
+			srv := newInstance(t, p)
+			code, out := runVerify(t, srv.URL, siteName, "30")
+			if tc.isOk {
+				if code != 0 || !strings.Contains(out, "ok   prices-fresh") {
+					t.Fatalf("exit %d, want 0 with prices-fresh ok, output:\n%s", code, out)
+				}
+				return
+			}
+			if code != 1 || !strings.Contains(out, "FAIL prices-fresh") || !strings.Contains(out, "failed: prices-fresh") {
+				t.Fatalf("exit %d, want 1 with only prices-fresh failed, output:\n%s", code, out)
+			}
+		})
+	}
+}

@@ -3,11 +3,13 @@ package management
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/boltdb/bolt"
@@ -60,8 +62,22 @@ func TestHandleBackupToFileWritesCompleteGzip(t *testing.T) {
 		t.Fatalf("status = %d, body %q", rec.Code, rec.Body.String())
 	}
 
+	assertBoltHoldsAppraisal(t, readGzipBolt(t, path), "Tritanium 5")
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "appraisals.gz" {
+		t.Errorf("backup directory = %v, want only appraisals.gz", entries)
+	}
+}
+
+// assertBoltHoldsAppraisal opens data as a read-only bolt file and fails
+// unless an appraisal in it contains raw.
+func assertBoltHoldsAppraisal(t *testing.T, data []byte, raw string) {
+	t.Helper()
 	restored := filepath.Join(t.TempDir(), "restored")
-	if err := os.WriteFile(restored, readGzipBolt(t, path), 0o600); err != nil {
+	if err := os.WriteFile(restored, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rdb, err := bolt.Open(restored, 0o600, &bolt.Options{ReadOnly: true})
@@ -70,14 +86,37 @@ func TestHandleBackupToFileWritesCompleteGzip(t *testing.T) {
 	}
 	defer rdb.Close()
 	var found bool
-	_ = rdb.View(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte("appraisals")).ForEach(func(_, v []byte) error {
-			found = found || bytes.Contains(v, []byte("Tritanium 5"))
+	err = rdb.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("appraisals"))
+		if bucket == nil {
+			return errors.New("no appraisals bucket")
+		}
+		return bucket.ForEach(func(_, v []byte) error {
+			found = found || bytes.Contains(v, []byte(raw))
 			return nil
 		})
 	})
+	if err != nil {
+		t.Fatalf("reading backup: %v", err)
+	}
 	if !found {
-		t.Error("restored backup does not contain the appraisal")
+		t.Errorf("backup does not contain an appraisal with %q", raw)
+	}
+}
+
+// TestHandleBackupToFileReturns500WhenDirMissing pins the error status: a
+// backup that cannot be written must not answer 200.
+func TestHandleBackupToFileReturns500WhenDirMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "appraisals.gz")
+	ctx, _ := newTestContext(t, path)
+
+	rec := httptest.NewRecorder()
+	ctx.HandleBackupToFile(rec, httptest.NewRequest(http.MethodGet, "/backup-to-file/appraisals", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	if !strings.Contains(rec.Body.String(), "missing") {
+		t.Errorf("body %q does not name the failing path", rec.Body.String())
 	}
 }
 
@@ -105,14 +144,19 @@ func TestBackupFailureKeepsPreviousFile(t *testing.T) {
 	}
 }
 
-// TestHandleBackupStreamIsCompleteBolt: the streaming variant sends raw bolt, not gzip.
+// TestHandleBackupStreamIsCompleteBolt: the streaming variant sends raw bolt,
+// not gzip, and the body opens as a database holding the stored appraisal.
 func TestHandleBackupStreamIsCompleteBolt(t *testing.T) {
-	ctx, _ := newTestContext(t, "")
+	ctx, adb := newTestContext(t, "")
+	if err := adb.PutNewAppraisal(&evepraisal.Appraisal{Kind: "test", Raw: "Pyerite 7"}); err != nil {
+		t.Fatal(err)
+	}
 	rec := httptest.NewRecorder()
 	ctx.HandleBackup(rec, httptest.NewRequest(http.MethodGet, "/backup/appraisals", nil))
-	if rec.Code != http.StatusOK || rec.Body.Len() == 0 {
-		t.Fatalf("status = %d, len %d", rec.Code, rec.Body.Len())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
 	}
+	assertBoltHoldsAppraisal(t, rec.Body.Bytes(), "Pyerite 7")
 }
 
 // TestHandleRestoreConflictOnExistingID pins the status the restore command
@@ -128,5 +172,12 @@ func TestHandleRestoreConflictOnExistingID(t *testing.T) {
 	ctx.HandleRestore(rec, httptest.NewRequest(http.MethodPost, "/restore", body))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d, body %q", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	stored, err := adb.GetAppraisal("a", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Raw != "original" {
+		t.Errorf("stored Raw = %q, want %q: the conflict overwrote it", stored.Raw, "original")
 	}
 }

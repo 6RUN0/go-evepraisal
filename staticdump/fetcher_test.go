@@ -1,10 +1,13 @@
 package staticdump
 
 import (
+	"bytes"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -444,4 +447,95 @@ func TestOpenNewestTypeDBNone(t *testing.T) {
 		t.Fatalf("OpenNewestTypeDB = %v, %v; want ErrNoTypeDB", db, err)
 	}
 	assertExists(t, partial)
+}
+
+// makeUnopenableTypeDB creates a type DB that looks ready (bolt file and
+// index directory exist) but whose bolt file is garbage, as on a volume left
+// by a crashed or foreign container.
+func makeUnopenableTypeDB(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	touchFile(t, path)
+	touchDir(t, path+typeDBIndexSuffix)
+	return path
+}
+
+// captureLog sends the standard logger to a buffer for the rest of the test.
+// Read the buffer only after every goroutine that logs has stopped.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(orig) })
+	return &buf
+}
+
+// TestNewStaticFetcherBuildsSynchronouslyWhenOldDBUnopenable pins start() for
+// an old ready-looking DB that fails to open: the build runs before start()
+// returns, as on an empty db_path, and the broken DB is removed once the new
+// one is delivered.
+func TestNewStaticFetcherBuildsSynchronouslyWhenOldDBUnopenable(t *testing.T) {
+	dir := t.TempDir()
+	broken := makeUnopenableTypeDB(t, dir, "types-100")
+	srv, archiveRequests := sdeServer(t, http.StatusOK, serveFile(t, sampleZip(t)))
+	rec := newDBRecorder(t)
+	logs := captureLog(t)
+
+	f := newTestFetcher(srv, dir, rec).start()
+	assertCalls(t, rec, sdeLabel)
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := archiveRequests.Load(); got != 1 {
+		t.Errorf("archive requests = %d, want 1", got)
+	}
+	assertMissing(t, broken, broken+typeDBIndexSuffix)
+	if !strings.Contains(logs.String(), "ERROR: opening type DB "+broken) {
+		t.Errorf("log lacks the open error for %s:\n%s", broken, logs)
+	}
+}
+
+// TestNewStaticFetcherStartsWithoutTypesWhenOldDBUnopenableAndCCPDown pins
+// that start() returns with no type DB delivered when the old DB fails to open
+// and the manifest is unreachable; the broken DB stays on disk.
+func TestNewStaticFetcherStartsWithoutTypesWhenOldDBUnopenableAndCCPDown(t *testing.T) {
+	dir := t.TempDir()
+	broken := makeUnopenableTypeDB(t, dir, "types-100")
+	srv, _ := sdeServer(t, http.StatusServiceUnavailable, unexpectedArchive(t))
+	rec := newDBRecorder(t)
+	logs := captureLog(t)
+
+	f := newTestFetcher(srv, dir, rec).start()
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	assertCalls(t, rec)
+	assertExists(t, broken, broken+typeDBIndexSuffix)
+	if !strings.Contains(logs.String(), "ERROR: failed to fetch static data from CCP:") {
+		t.Errorf("log lacks the fetch error:\n%s", logs)
+	}
+}
+
+// TestRunOnceNeverRebuildsUnopenableCurrentBuild pins a known defect: a
+// broken DB named after the latest build counts as ready, so every run tries
+// to open it again and fails without downloading, and the service stays
+// without types until the broken files are deleted by hand.
+func TestRunOnceNeverRebuildsUnopenableCurrentBuild(t *testing.T) {
+	dir := t.TempDir()
+	broken := makeUnopenableTypeDB(t, dir, "types-"+testBuild)
+	srv, archiveRequests := sdeServer(t, http.StatusOK, unexpectedArchive(t))
+	rec := newDBRecorder(t)
+	f := newTestFetcher(srv, dir, rec)
+
+	for range 2 {
+		if err := f.RunOnce(); err == nil {
+			t.Fatal("RunOnce: want error for an unopenable current build")
+		}
+	}
+	assertCalls(t, rec)
+	if got := archiveRequests.Load(); got != 0 {
+		t.Errorf("archive requests = %d, want 0", got)
+	}
+	assertExists(t, broken, broken+typeDBIndexSuffix)
 }
