@@ -15,6 +15,12 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   file to `/etc/evepraisal/evepraisal.toml` (read-only). Upstream kept the
   databases only inside the container: copy them out before removing it, see
   "Migrate from the upstream compose file" in `README.md`.
+- `docker-compose.yml` sets no `container_name`: the container is named
+  `<project>-evepraisal-1`, so scripts and monitors calling
+  `docker exec evepraisal` or `docker logs evepraisal` need the new name or
+  `docker compose exec` / `docker compose logs`. Port 8081 is not published.
+  `restart: unless-stopped` replaces `restart: always`: a container stopped
+  by hand stays stopped after a Docker daemon restart.
 - The image builds the checked-out tree instead of cloning upstream at build
   time, so `docker compose up --build` runs from a clone of this repository.
 - Item types come from CCP's JSONL static data export, found through the
@@ -36,9 +42,9 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   `/latest`, `/v1` or `/legacy` in `esi_baseurl` is stripped with a warning,
   so existing configs keep working; the default is `https://esi.evetech.net`.
 - ESI rate limits are honoured: a 420 or 429 pauses for `Retry-After` or the
-  error-limit reset (1 minute without a header, at most 5 minutes) and is
-  retried up to three times; a low error or rate budget pauses before the
-  next request. A busy cycle gets longer instead of being blocked by ESI.
+  error-limit reset (1 minute without a header, at most 5 minutes); one URL
+  is requested at most three times in all. A low error or rate budget pauses
+  before the next request. A busy cycle gets longer instead of being blocked by ESI.
 - Region pages are counted from `X-Pages` instead of reading until an empty
   page.
 - One failing region no longer discards the whole cycle: the other regions'
@@ -63,9 +69,11 @@ commit `1aa3024`, for operators moving from upstream. The format follows
 - `site-name`, `source-url`, `about-contacts-html`, `favicon-path`: branding
   of a self-hosted instance. Defaults reproduce the upstream site.
 - `evepraisal healthcheck` subcommand, used by the image `HEALTHCHECK` with a
-  15-minute start period that covers the first type DB build on an empty
-  volume. It does not follow redirects and counts a 3xx as healthy, so it
-  works with `http_redirect = true`.
+  30-minute start period for the first type DB build on an empty volume:
+  2 x 600 seconds of download plus 10 minutes of build time, which is not
+  measured; a longer build is reported unhealthy while it runs. It does not
+  follow redirects and counts a 3xx as healthy, so it works with
+  `http_redirect = true`.
 - `scripts/verify-instance.sh`: checks a deployed site from outside
   (robots, favicon, branding, status link, price freshness).
 - The service stops cleanly on SIGTERM (`docker stop`), not only on SIGINT;

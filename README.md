@@ -255,8 +255,8 @@ Compose secrets keep the cookie keys and the SSO secret out of the config
 file and out of `docker inspect`. Compose mounts each one read-only at
 `/run/secrets/<name>`, which works with the read-only root filesystem. Put
 this into `docker-compose.override.yml` next to `docker-compose.yml`, with
-the files under `./secrets/` readable by UID 65532 (`chmod 0444` or
-`sudo chown 65532`):
+the files under `./secrets/` owned by UID 65532 and readable only by it
+(`sudo chown 65532:65532 secrets/* && sudo chmod 0400 secrets/*`):
 
 ```yaml
 services:
@@ -322,9 +322,12 @@ read through viper is missing there or a row is missing here.
 ## Data directory
 
 Everything lives under `db_path` (`./data/db/` on the host with the compose
-file). Directories are created with mode 0700 and files with 0600, owned by
-UID 65532: on the host, reading them needs `sudo`. Files are bolt databases,
-each opened by one process at a time.
+file). The bolt databases and `backups/appraisals.gz` are created with mode
+0600, the SDE archive and some search index files with the process umask
+(0644 under Docker's default 022); `db_path` is created with mode 0700 when
+the service creates it; the image's own `/data/db`, used without a bind
+mount, has 0755. Everything is owned by UID 65532: on the host, reading it
+needs `sudo`. Each bolt database is opened by one process at a time.
 
 | Name | Content | Safe to delete |
 | --- | --- | --- |
@@ -350,8 +353,11 @@ With no ready type DB under `db_path` the service downloads the SDE archive
 and builds the type DB before the HTTP server listens. The archive is about
 100 MB (a code comment, not measured here); the build takes minutes,
 depending on bandwidth and disk (not measured). The image healthcheck has a
-15-minute start period: until then a failed probe does not mark the container
-unhealthy.
+30-minute start period: until then a failed probe does not mark the container
+unhealthy. It is sized as 2 x 600 seconds of download (below) plus 10 minutes
+for the build, which is not measured; a build still running after 30 minutes
+marks the container unhealthy while it works. A failed build lets the HTTP
+server start, so the probe passes from then on.
 
 The download has 600 seconds per attempt and two attempts, 2 seconds apart.
 Below about 170 KB/s (100 MB in 600 s) it cannot finish, and every retry
@@ -404,9 +410,11 @@ once.
 
 Each ESI request has a 30-second timeout. A network error or a 5xx answer is
 retried up to 10 attempts with pauses of about 2, 4, 8 ... 512 seconds
-(plus or minus a third), so one failing page can take about 17 minutes
-before its region fails. A 404 counts as an empty page. Any other 4xx except
-420 and 429 fails the region at once.
+(plus or minus a third). One failing page fails its region after
+2 + 4 + ... + 512 = 1022 seconds of pauses plus up to 10 x 30 seconds of
+timed-out attempts: about 17 to 22 minutes, up to 28 with the largest
+jitter. A 404 counts as an empty page. Any other 4xx except 420 and 429 fails
+the region at once.
 
 ESI rate limits are honoured inside a cycle, which makes the cycle longer, not
 failed. Every pause is capped at 5 minutes.
@@ -452,14 +460,15 @@ Exit code 0: all checks passed. 1: the failed check names follow
 
 ### Stop
 
-On SIGTERM (`docker compose stop`) the service gives in-flight requests up
-to 10 seconds per server (HTTP, HTTPS, management API), one server after
-the other. It then waits for a running SDE download to end (up to 600
-seconds, the download cannot be interrupted) and cancels running ESI
-requests before closing the databases. Compose sends SIGKILL after 30
-seconds (`stop_grace_period`). A kill loses no committed data: bolt
-writes each transaction atomically (bolt documentation); an unfinished type
-DB build is removed on the next start.
+On SIGTERM (`docker compose stop`) the service stops the management API,
+the HTTP and the HTTPS server, one after the other, giving in-flight requests
+up to 10 seconds per server. It then waits for a running SDE download to end
+(up to 600 seconds, the download cannot be interrupted) and closes the type
+DB, closes the appraisal DB, cancels running ESI requests, and closes the HTTP
+cache and the price DB last. Compose sends SIGKILL after 30 seconds
+(`stop_grace_period`). A kill loses no committed data: bolt writes each
+transaction atomically (bolt documentation); an unfinished type DB build is
+removed on the next start.
 
 ### Upgrade
 
