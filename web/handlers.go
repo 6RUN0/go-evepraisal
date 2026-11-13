@@ -55,7 +55,8 @@ func (ctx *Context) HandleAPIDocs(w http.ResponseWriter, r *http.Request) {
 
 // HandleRobots is the handler for /robots.txt
 func (ctx *Context) HandleRobots(w http.ResponseWriter, r *http.Request) {
-	r.Header["Content-Type"] = []string{"text/plain"}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = io.WriteString(w, `User-agent: *
 Disallow:`)
 }
@@ -151,10 +152,15 @@ func (ctx *Context) HTTPHandler() http.Handler {
 				log.Printf("ERROR: not able to read static file: %s", err)
 				continue
 			}
+			contentType := mime.TypeByExtension(filepath.Ext(path))
 			router.GetFunc(
 				httpPath,
 				func(w http.ResponseWriter, r *http.Request) {
-					r.Header["Content-Type"] = []string{mime.TypeByExtension(filepath.Ext(path))}
+					// An unknown extension leaves the type to net/http sniffing.
+					if contentType != "" {
+						w.Header().Set("Content-Type", contentType)
+					}
+					w.Header().Set("X-Content-Type-Options", "nosniff")
 					_, _ = w.Write(body)
 				})
 		}
@@ -253,7 +259,10 @@ func (ctx *Context) ValidateExtraStaticFilePath() error {
 
 // extraStaticFiles maps the route of every regular file under root to its path.
 // The root is resolved first: a trailing slash would eat the leading slash of
-// every route, and WalkDir does not descend into a symlinked root.
+// every route, and WalkDir does not descend into a symlinked root. Entries
+// that are not regular files are skipped without a log line: a symlink could
+// serve any file the process can read, and reading a FIFO or device on start
+// blocks or never ends.
 func extraStaticFiles(root string) (map[string]string, error) {
 	files := map[string]string{}
 	resolved, err := filepath.EvalSymlinks(root)
@@ -272,7 +281,7 @@ func extraStaticFiles(root string) (map[string]string, error) {
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() {
+		if !entry.Type().IsRegular() {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)

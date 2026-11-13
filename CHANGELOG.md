@@ -113,6 +113,12 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   no longer drops the leading `/` of every served route. A symlinked
   directory as the path is served; no file under it was. Any error walking
   the tree, such as an unreadable subdirectory, stops the start.
+- Files from `extra-static-file-path` and `/robots.txt` are sent with a
+  `Content-Type` from the file extension and `X-Content-Type-Options:
+  nosniff`; the type was set on the request, so a stylesheet arrived as
+  `text/plain` and browsers did not apply it. Symlinks, FIFOs and devices
+  inside the directory are skipped: a symlink served any file the process
+  could read, and a FIFO blocked the start.
 - `/backup-to-file/appraisals` writes a complete gzip file: the stream was
   never closed, so `appraisals.gz` was truncated. It is written to a temporary
   file and renamed only when complete, so a failed run keeps the previous
