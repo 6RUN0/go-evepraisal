@@ -359,8 +359,9 @@ unhealthy. It allows 2 x 600 seconds of download (below) plus 10 minutes for
 the build, which is not measured; the manifest request before the download
 uses the same client and is not counted. A build still running after 30
 minutes marks the container unhealthy while it works, after three failed
-probes 30 seconds apart (Docker defaults), about 31.5 minutes after start. A failed build lets the HTTP
-server start, so the probe passes from then on.
+probes 30 seconds apart (Docker defaults), about 31.5 minutes after start.
+A failed build lets the HTTP server start, so the probe passes from then
+on.
 
 The download has 600 seconds per attempt and two attempts, 2 seconds apart.
 Below about 170 KB/s (100 MB in 600 s) it cannot finish, and every retry
@@ -424,15 +425,15 @@ retried up to 10 attempts with pauses of about 2, 4, 8 ... 512 seconds
 (plus or minus a third). One failing page fails its region after
 2 + 4 + ... + 512 = 1022 seconds of pauses (681 to 1363 with the jitter)
 plus up to 10 x 30 seconds of timed-out attempts: about 11 to 28 minutes,
-typically 17 to 22. A 404 counts as an empty page. Any other 4xx except 420 and 429 fails
-the region at once.
+typically 17 to 22. A 404 counts as an empty page. Any other 4xx except
+420 and 429 fails the region at once.
 
 ESI rate limits are honoured inside a cycle, which makes the cycle longer, not
 failed. Every pause is capped at 5 minutes.
 
 | ESI signal | Pause |
 | --- | --- |
-| 420 or 429 | `Retry-After`, else `X-Esi-Error-Limit-Reset` (420 only), else 1 minute; after the third such answer for one URL its region fails |
+| 420 or 429 | `Retry-After`, else `X-Esi-Error-Limit-Reset` (420 only), else 1 minute; after the third such answer for one URL its region fails (`/markets/prices`: the CCP price fallback is skipped for the cycle) |
 | `X-Esi-Error-Limit-Remain` below 10 | until `X-Esi-Error-Limit-Reset` |
 | `X-Ratelimit-Remaining` below 100 | 1 minute |
 
@@ -473,9 +474,9 @@ Exit code 0: all checks passed. 1: the failed check names follow
 
 On SIGTERM (`docker compose stop`) the service stops the management API,
 the HTTP and the HTTPS server, one after the other, giving in-flight requests
-up to 10 seconds per server. It then waits for a running SDE download to end
-(up to 600 seconds per attempt, the download cannot be interrupted) and closes the type
-DB, closes the appraisal DB, cancels running ESI requests, and closes the HTTP
+up to 10 seconds per server. It then waits for a running SDE download to
+end (up to 600 seconds per attempt, the download cannot be interrupted) and
+closes the type DB, closes the appraisal DB, cancels running ESI requests, and closes the HTTP
 cache and the price DB last. Compose sends SIGKILL after 30 seconds
 (`stop_grace_period`). A kill loses no committed data: bolt writes each
 transaction atomically (bolt documentation); an unfinished type DB build is

@@ -43,9 +43,10 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   so existing configs keep working; the default is `https://esi.evetech.net`.
 - ESI rate limits are honoured: a 420 or 429 pauses for `Retry-After` or the
   error-limit reset (1 minute without a header, at most 5 minutes); the
-  third 420 or 429 answer for one URL fails its region. Each of those
-  requests is itself retried on network errors and 5xx, as described in
-  "Market prices" in `README.md`. A low error or rate budget pauses before
+  third 420 or 429 answer for one URL fails that request: a region page
+  fails its region, `/markets/prices` skips the CCP price fallback for the
+  cycle. Each of those requests is itself retried on network errors and
+  5xx, as described in "Market prices" in `README.md`. A low error or rate budget pauses before
   the next request. A busy cycle gets longer instead of being blocked by ESI.
 - Region pages are counted from `X-Pages` instead of reading until an empty
   page.
@@ -74,9 +75,8 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   30-minute start period for the first type DB build on an empty volume:
   2 x 600 seconds of download plus 10 minutes of build time, which is not
   measured, not counting the manifest request; a longer build is reported
-  unhealthy while it runs. It does not
-  follow redirects and counts a 3xx as healthy, so it works with
-  `http_redirect = true`.
+  unhealthy while it runs. It does not follow redirects and counts a 3xx as
+  healthy, so it works with `http_redirect = true`.
 - `scripts/verify-instance.sh`: checks a deployed site from outside
   (robots, favicon, branding, status link, price freshness).
 - The service stops cleanly on SIGTERM (`docker stop`), not only on SIGINT;
