@@ -113,12 +113,16 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   no longer drops the leading `/` of every served route. A symlinked
   directory as the path is served; no file under it was. Any error walking
   the tree, such as an unreadable subdirectory, stops the start.
-- Files from `extra-static-file-path` and `/robots.txt` are sent with a
-  `Content-Type` from the file extension and `X-Content-Type-Options:
-  nosniff`; the type was set on the request, so a stylesheet arrived as
-  `text/plain` and browsers did not apply it. Symlinks, FIFOs and devices
-  inside the directory are skipped: a symlink served any file the process
-  could read, and a FIFO blocked the start.
+- Files from `extra-static-file-path` are sent with a `Content-Type` from
+  the file extension (sniffed when the extension is unknown), `/robots.txt`
+  as `text/plain`, both with `X-Content-Type-Options: nosniff`; the type was
+  set on the request, so a stylesheet arrived as `text/plain` and browsers
+  did not apply it. Inside the directory a symlink is served only when it
+  resolves to a regular file inside the directory, other symlinks are
+  skipped with a `WARN` line: a symlink served any file the process could
+  read. FIFOs and devices are skipped, a FIFO blocked the start.
+  Directories named `..*` are skipped, so a ConfigMap mount serves each
+  file once, at its own name.
 - A type DB whose search index fails to open closes its bolt file; each
   retry of a failed first build left a descriptor, a memory mapping and the
   file lock behind.

@@ -141,9 +141,12 @@ func (ctx *Context) HTTPHandler() http.Handler {
 	router.PostFunc("/a/delete/#appraisalID^[a-zA-Z0-9]+$", ctx.authWrapper(ctx.HandleDeleteAppraisal))
 
 	if ctx.ExtraStaticFilePath != "" {
-		files, err := extraStaticFiles(ctx.ExtraStaticFilePath)
+		files, skippedLinks, err := extraStaticFiles(ctx.ExtraStaticFilePath)
 		if err != nil {
 			log.Println(err)
+		}
+		for _, link := range skippedLinks {
+			log.Printf("WARN: Extra static symlink skipped, not a regular file inside the directory path=%s", link)
 		}
 		for httpPath, path := range files {
 			log.Printf("Adding %s as %s", path, httpPath)
@@ -152,7 +155,7 @@ func (ctx *Context) HTTPHandler() http.Handler {
 				log.Printf("ERROR: not able to read static file: %s", err)
 				continue
 			}
-			contentType := mime.TypeByExtension(filepath.Ext(path))
+			contentType := mime.TypeByExtension(filepath.Ext(httpPath))
 			router.GetFunc(
 				httpPath,
 				func(w http.ResponseWriter, r *http.Request) {
@@ -253,21 +256,25 @@ func (ctx *Context) ValidateExtraStaticFilePath() error {
 	if ctx.ExtraStaticFilePath == "" {
 		return nil
 	}
-	_, err := extraStaticFiles(ctx.ExtraStaticFilePath)
+	_, _, err := extraStaticFiles(ctx.ExtraStaticFilePath)
 	return err
 }
 
-// extraStaticFiles maps the route of every regular file under root to its path.
-// The root is resolved first: a trailing slash would eat the leading slash of
-// every route, and WalkDir does not descend into a symlinked root. Entries
-// that are not regular files are skipped without a log line: a symlink could
-// serve any file the process can read, and reading a FIFO or device on start
-// blocks or never ends.
-func extraStaticFiles(root string) (map[string]string, error) {
-	files := map[string]string{}
+// extraStaticFiles maps the route of every regular file under root to the
+// file to read, and lists the symlinks it skipped. The root is resolved first:
+// a trailing slash would eat the leading slash of every route, and WalkDir does
+// not descend into a symlinked root. A symlink is served only when it resolves
+// to a regular file inside the root, as in a Kubernetes ConfigMap mount or a
+// tree of links into a release directory; one leading out of the root could
+// serve any file the process can read. FIFOs and devices are skipped: reading
+// one on start blocks or never ends. Directories and symlinks named "..*" are
+// the ConfigMap writer's internals, whose files are also reachable through the
+// top-level links, so they are skipped to serve each file once.
+func extraStaticFiles(root string) (files map[string]string, skippedLinks []string, err error) {
+	files = map[string]string{}
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return files, fmt.Errorf("extra-static-file-path %q: %w", filepath.Clean(root), err)
+		return files, nil, fmt.Errorf("extra-static-file-path %q: %w", filepath.Clean(root), err)
 	}
 	root = resolved
 	info, err := os.Stat(root)
@@ -275,24 +282,59 @@ func extraStaticFiles(root string) (map[string]string, error) {
 		err = errors.New("not a directory")
 	}
 	if err != nil {
-		return files, fmt.Errorf("extra-static-file-path %q: %w", root, err)
+		return files, nil, fmt.Errorf("extra-static-file-path %q: %w", root, err)
 	}
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !entry.Type().IsRegular() {
+		isInternal := path != root && strings.HasPrefix(entry.Name(), "..")
+		target := path
+		switch {
+		case entry.IsDir():
+			if isInternal {
+				return filepath.SkipDir
+			}
+			return nil
+		case entry.Type()&fs.ModeSymlink != 0:
+			if isInternal {
+				return nil
+			}
+			if target = regularTargetInside(root, path); target == "" {
+				skippedLinks = append(skippedLinks, path)
+				return nil
+			}
+		case !entry.Type().IsRegular():
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		files["/"+filepath.ToSlash(rel)] = path
+		files["/"+filepath.ToSlash(rel)] = target
 		return nil
 	})
 	if err != nil {
-		return files, fmt.Errorf("extra-static-file-path %q: %w", root, err)
+		return files, skippedLinks, fmt.Errorf("extra-static-file-path %q: %w", root, err)
 	}
-	return files, nil
+	return files, skippedLinks, nil
+}
+
+// regularTargetInside returns the file link resolves to when it is a regular
+// file under root, and "" otherwise, a dangling link included. root must be
+// resolved already, so that the prefix comparison is between real paths.
+func regularTargetInside(root, link string) string {
+	target, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	info, err := os.Stat(target)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	return target
 }
