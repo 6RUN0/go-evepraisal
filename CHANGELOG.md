@@ -96,6 +96,14 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   `password` or `token` appear as `<set>` or `<unset>` instead of `MASKED`;
   the four named keys are listed even when unset.
 
+### Removed
+
+- `scripts/backup.sh`: it called the management API with `curl` from the
+  host and used `/usr/local/evepraisal` paths, neither of which exists with
+  this image, and it deleted the previous `appraisals.gz` before the new
+  backup was written, so a failed run left no backup at all. Back up with the
+  service stopped as in "Back up appraisals" in `README.md`.
+
 ### Fixed
 
 - A missing `db_path` or `backup_path` directory, as on a fresh bind mount,
