@@ -441,6 +441,42 @@ func TestOpenNewestTypeDBKeepsPartialBuilds(t *testing.T) {
 	assertExists(t, partial, partial+".index")
 }
 
+// TestOpenNewestTypeDBFallsBackToOlderDB pins that restore opens an older DB
+// when the newest ready one fails to open, as the service does on start.
+func TestOpenNewestTypeDBFallsBackToOlderDB(t *testing.T) {
+	dir := t.TempDir()
+	makeReadyTypeDB(t, dir, "types-100")
+	makeUnopenableTypeDB(t, dir, "types-"+testBuild)
+
+	db, err := OpenNewestTypeDB(dir)
+	if err != nil {
+		t.Fatalf("OpenNewestTypeDB: %v", err)
+	}
+	defer db.Close()
+	if ty, ok := db.GetTypeByID(fixtureTypeID); !ok || ty.Name != "types-100" {
+		t.Errorf("opened DB type = %v %v, want types-100", ty.Name, ok)
+	}
+}
+
+// TestOpenNewestTypeDBJoinsErrors pins that the error names every ready DB
+// that failed to open.
+func TestOpenNewestTypeDBJoinsErrors(t *testing.T) {
+	dir := t.TempDir()
+	older := makeUnopenableTypeDB(t, dir, "types-100")
+	newer := makeUnopenableTypeDB(t, dir, "types-"+testBuild)
+
+	db, err := OpenNewestTypeDB(dir)
+	if err == nil {
+		_ = db.Close()
+		t.Fatal("OpenNewestTypeDB: want error when no DB opens")
+	}
+	for _, path := range []string{older, newer} {
+		if !strings.Contains(err.Error(), "opening type DB "+path+":") {
+			t.Errorf("error lacks %s: %v", path, err)
+		}
+	}
+}
+
 func TestOpenNewestTypeDBNone(t *testing.T) {
 	dir := t.TempDir()
 	partial := filepath.Join(dir, "types-"+testBuild+".partial")
@@ -629,7 +665,11 @@ func TestNewStaticFetcherFallsBackToOlderDBWhenNewestUnopenable(t *testing.T) {
 	valid := sampleZip(t)
 	release := make(chan struct{})
 	srv, archiveRequests := sdeServer(t, http.StatusOK, func(w http.ResponseWriter, r *http.Request) {
-		<-release
+		// A start() that builds synchronously would wait here forever.
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+		}
 		http.ServeFile(w, r, valid)
 	})
 	rec := newDBRecorder(t)

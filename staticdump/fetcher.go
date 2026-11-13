@@ -52,18 +52,23 @@ type StaticFetcher struct {
 	wg   *sync.WaitGroup
 }
 
-// OpenNewestTypeDB opens the newest ready type DB in dbPath read-only without
-// building or removing anything; it returns ErrNoTypeDB if there is none.
+// OpenNewestTypeDB opens the newest ready type DB in dbPath that opens,
+// read-only, without building or removing anything; it returns ErrNoTypeDB if
+// there is no ready DB and the joined open errors if none of them opens.
 func OpenNewestTypeDB(dbPath string) (typedb.TypeDB, error) {
-	path, ok := findNewestTypeDB(dbPath)
-	if !ok {
+	paths := findReadyTypeDBs(dbPath)
+	if len(paths) == 0 {
 		return nil, fmt.Errorf("%w in %s", ErrNoTypeDB, dbPath)
 	}
-	typeDB, err := bolt.NewTypeDB(path, false)
-	if err != nil {
-		return nil, fmt.Errorf("opening type DB %s: %w", path, err)
+	var errs []error
+	for _, path := range paths {
+		typeDB, err := bolt.NewTypeDB(path, false)
+		if err == nil {
+			return typeDB, nil
+		}
+		errs = append(errs, fmt.Errorf("opening type DB %s: %w", path, err))
 	}
-	return typeDB, nil
+	return nil, errors.Join(errs...)
 }
 
 // NewStaticFetcher delivers a type DB to callback and keeps it current. With a
@@ -146,8 +151,9 @@ func (f *StaticFetcher) start() *StaticFetcher {
 }
 
 // RunOnce delivers the latest SDE build to the callback unless it is already
-// current; a DB of that build that fails to open is rebuilt. On any failure the current DB stays in place and the broken
-// archive cache and partial build are removed, so the next run starts clean.
+// current; a DB of that build that fails to open is rebuilt. On any failure
+// the current DB stays in place and the broken archive cache and partial build
+// are removed, so the next run starts clean.
 func (f *StaticFetcher) RunOnce() error {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
@@ -178,6 +184,8 @@ func (f *StaticFetcher) RunOnce() error {
 	// fail on it forever. ErrTimeout means another process holds it open for
 	// writing: the files are left alone and the next run tries again. The
 	// broken DB is replaced only after a successful build (see buildTypeDB).
+	// Any other open error rebuilds, transient ones (EMFILE, EACCES) too: that
+	// costs a build but loses no data, and the served DB is never this one.
 	if err != nil && !built && !errors.Is(err, boltdb.ErrTimeout) {
 		log.Printf("WARNING: rebuilding type DB that fails to open path=%s error=%q", typedbPath, err)
 		if err := f.buildTypeDB(typedbPath, dump.URL); err != nil {

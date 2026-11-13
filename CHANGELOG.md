@@ -148,7 +148,7 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   from the archive; every check failed on it, and the service stayed without
   item types until the files were deleted by hand. Until the rebuild is
   delivered the service runs on an older type DB that opens, if one is on
-  disk; it started without types before.
+  disk; it could start without types before.
 - A type DB whose search index fails to open closes its bolt file; each
   retry of a failed first build left a descriptor, a memory mapping and the
   file lock behind.
