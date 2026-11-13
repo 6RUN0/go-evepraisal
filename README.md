@@ -453,11 +453,11 @@ Exit code 0: all checks passed. 1: the failed check names follow
 ### Stop
 
 On SIGTERM (`docker compose stop`) the service gives in-flight requests up
-to 10 seconds per HTTP server, one server after the other. It then waits for
-a running SDE download to end (up to 600 seconds, the download cannot be
-interrupted) and cancels running ESI requests before closing the databases.
-Compose sends SIGKILL after
-20 seconds (`stop_grace_period`). A kill loses no committed data: bolt
+to 10 seconds per server (HTTP, HTTPS, management API), one server after
+the other. It then waits for a running SDE download to end (up to 600
+seconds, the download cannot be interrupted) and cancels running ESI
+requests before closing the databases. Compose sends SIGKILL after 30
+seconds (`stop_grace_period`). A kill loses no committed data: bolt
 writes each transaction atomically (bolt documentation); an unfinished type
 DB build is removed on the next start.
 

@@ -69,7 +69,8 @@ commit `1aa3024`, for operators moving from upstream. The format follows
 - `scripts/verify-instance.sh`: checks a deployed site from outside
   (robots, favicon, branding, status link, price freshness).
 - The service stops cleanly on SIGTERM (`docker stop`), not only on SIGINT;
-  compose waits 20 seconds (`stop_grace_period`) before SIGKILL.
+  compose waits 30 seconds (`stop_grace_period`, 10 per server) before
+  SIGKILL.
 - A published image `ghcr.io/6run0/go-evepraisal` for `linux/amd64`, built
   after `make check` passes: `X.Y.Z` and `X.Y` from tags `vX.Y.Z` on
   `master`, `latest` from the highest such tag, `edge` and `sha-<commit>` from

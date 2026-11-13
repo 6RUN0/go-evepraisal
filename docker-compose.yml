@@ -11,5 +11,5 @@ services:
       - ./data:/data
       - ./evepraisal.toml:/etc/evepraisal/evepraisal.toml:ro
     restart: unless-stopped
-    # stop_grace_period >= HTTP servers x 10s shutdown timeout
-    stop_grace_period: 20s
+    # stop_grace_period >= (HTTP + HTTPS + management servers) x 10s shutdown timeout
+    stop_grace_period: 30s
