@@ -380,6 +380,14 @@ for the check right after start, and
 `WARNING: Fetcher failed to run, keeping the current type DB:` for the later
 ones.
 
+A type DB that exists but fails to open (a damaged file, for example) is
+skipped on start: the service runs on the newest older `types-*` that opens,
+if there is one, and otherwise builds as on an empty data directory. A broken
+DB of the latest SDE build is rebuilt from the archive with
+`WARNING: rebuilding type DB that fails to open` in the log; the broken files
+stay until the rebuild succeeds. A DB another process holds open for writing
+is left alone and retried on the next check.
+
 ### Market prices
 
 Every `market-fetch-interval` minutes the service reads all market orders of

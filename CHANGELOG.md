@@ -144,6 +144,11 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   read. FIFOs and devices are skipped, a FIFO blocked the start.
   Directories named `..*` are skipped, so a ConfigMap mount serves each
   file once, at its own name.
+- A type DB of the latest SDE build that exists but fails to open is rebuilt
+  from the archive; every check failed on it, and the service stayed without
+  item types until the files were deleted by hand. Until the rebuild is
+  delivered the service runs on an older type DB that opens, if one is on
+  disk; it started without types before.
 - A type DB whose search index fails to open closes its bolt file; each
   retry of a failed first build left a descriptor, a memory mapping and the
   file lock behind.

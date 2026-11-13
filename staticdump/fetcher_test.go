@@ -6,13 +6,17 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	boltdb "github.com/boltdb/bolt"
+	"github.com/evepraisal/go-evepraisal/bolt"
 	"github.com/evepraisal/go-evepraisal/typedb"
 )
 
@@ -518,25 +522,136 @@ func TestNewStaticFetcherStartsWithoutTypesWhenOldDBUnopenableAndCCPDown(t *test
 	}
 }
 
-// TestRunOnceNeverRebuildsUnopenableCurrentBuild pins a known defect: a
-// broken DB named after the latest build counts as ready, so every run tries
-// to open it again and fails without downloading, and the service stays
-// without types until the broken files are deleted by hand.
-func TestRunOnceNeverRebuildsUnopenableCurrentBuild(t *testing.T) {
+// TestRunOnceRebuildsUnopenableCurrentBuild pins that a broken DB named
+// after the latest build is rebuilt from the archive and delivered, instead of
+// failing every run until the files are deleted by hand.
+func TestRunOnceRebuildsUnopenableCurrentBuild(t *testing.T) {
 	dir := t.TempDir()
 	broken := makeUnopenableTypeDB(t, dir, "types-"+testBuild)
+	srv, archiveRequests := sdeServer(t, http.StatusOK, serveFile(t, sampleZip(t)))
+	rec := newDBRecorder(t)
+	logs := captureLog(t)
+	f := newTestFetcher(srv, dir, rec)
+
+	if err := f.RunOnce(); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	assertCalls(t, rec, sdeLabel)
+	if got := archiveRequests.Load(); got != 1 {
+		t.Errorf("archive requests = %d, want 1", got)
+	}
+	if f.currentPath != broken {
+		t.Errorf("currentPath = %s, want %s", f.currentPath, broken)
+	}
+	assertExists(t, broken, broken+typeDBIndexSuffix, broken+typeDBCacheSuffix)
+	assertNoGlob(t, filepath.Join(dir, "*.partial*"))
+	if !strings.Contains(logs.String(), "WARNING: rebuilding type DB that fails to open path="+broken) {
+		t.Errorf("log lacks the rebuild decision for %s:\n%s", broken, logs)
+	}
+}
+
+// TestRunOnceKeepsBrokenCurrentBuildWhenRebuildFails pins that a failed
+// download leaves the broken DB in place: it is replaced only by a finished
+// build, and no partial build or download is left behind.
+func TestRunOnceKeepsBrokenCurrentBuildWhenRebuildFails(t *testing.T) {
+	dir := t.TempDir()
+	broken := makeUnopenableTypeDB(t, dir, "types-"+testBuild)
+	srv, archiveRequests := sdeServer(t, http.StatusOK, http.NotFound)
+	rec := newDBRecorder(t)
+	f := newTestFetcher(srv, dir, rec)
+
+	if err := f.RunOnce(); err == nil {
+		t.Fatal("RunOnce: want error for a 404 archive")
+	}
+	assertCalls(t, rec)
+	if got := archiveRequests.Load(); got == 0 {
+		t.Error("archive was not requested")
+	}
+	assertExists(t, broken, broken+typeDBIndexSuffix)
+	assertNoGlob(t, filepath.Join(dir, "*.partial*"))
+	assertNoGlob(t, filepath.Join(dir, "*.download"))
+}
+
+// TestRunOnceLeavesLockedCurrentBuildAlone pins that a DB another process
+// holds open for writing (bolt.ErrTimeout) is neither rebuilt nor touched:
+// the run fails and the next one tries again.
+func TestRunOnceLeavesLockedCurrentBuildAlone(t *testing.T) {
+	dir := t.TempDir()
+	locked := makeReadyTypeDB(t, dir, "types-"+testBuild)
+	holder, err := bolt.NewTypeDB(locked, true)
+	if err != nil {
+		t.Fatalf("NewTypeDB(%s, writable): %v", locked, err)
+	}
+	t.Cleanup(func() { _ = holder.Close() })
+	before := snapshotDir(t, dir)
 	srv, archiveRequests := sdeServer(t, http.StatusOK, unexpectedArchive(t))
 	rec := newDBRecorder(t)
 	f := newTestFetcher(srv, dir, rec)
 
-	for range 2 {
-		if err := f.RunOnce(); err == nil {
-			t.Fatal("RunOnce: want error for an unopenable current build")
-		}
+	err = f.RunOnce()
+	if !errors.Is(err, boltdb.ErrTimeout) {
+		t.Fatalf("RunOnce = %v, want bolt.ErrTimeout", err)
 	}
 	assertCalls(t, rec)
 	if got := archiveRequests.Load(); got != 0 {
 		t.Errorf("archive requests = %d, want 0", got)
 	}
+	if after := snapshotDir(t, dir); !slices.Equal(after, before) {
+		t.Errorf("db_path entries = %v, want %v", after, before)
+	}
+}
+
+// snapshotDir lists the names and modification times of the entries in dir.
+func snapshotDir(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, entry.Name()+"@"+info.ModTime().String())
+	}
+	return names
+}
+
+// TestNewStaticFetcherFallsBackToOlderDBWhenNewestUnopenable pins that
+// start() serves the newest DB that opens at once, rebuilds the broken newer
+// build in the background, and removes the older DB only after that delivery.
+func TestNewStaticFetcherFallsBackToOlderDBWhenNewestUnopenable(t *testing.T) {
+	dir := t.TempDir()
+	older := makeReadyTypeDB(t, dir, "types-100")
+	broken := makeUnopenableTypeDB(t, dir, "types-"+testBuild)
+	valid := sampleZip(t)
+	release := make(chan struct{})
+	srv, archiveRequests := sdeServer(t, http.StatusOK, func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		http.ServeFile(w, r, valid)
+	})
+	rec := newDBRecorder(t)
+
+	f := newTestFetcher(srv, dir, rec).start()
+	assertCalls(t, rec, "types-100")
+	<-rec.delivered
+	assertExists(t, older, older+typeDBIndexSuffix, broken, broken+typeDBIndexSuffix)
+
+	close(release)
+	select {
+	case <-rec.delivered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("background rebuild did not deliver the new DB")
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	assertCalls(t, rec, "types-100", sdeLabel)
+	if got := archiveRequests.Load(); got != 1 {
+		t.Errorf("archive requests = %d, want 1", got)
+	}
+	assertMissing(t, older, older+typeDBIndexSuffix)
 	assertExists(t, broken, broken+typeDBIndexSuffix)
 }

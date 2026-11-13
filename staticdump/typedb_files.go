@@ -1,9 +1,11 @@
 package staticdump
 
 import (
+	"cmp"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,19 +32,35 @@ func isReadyTypeDB(path string) bool {
 	return err == nil
 }
 
-// findNewestTypeDB returns the newest ready type DB in dbPath: the highest
-// numeric build first, else the most recently modified legacy types-<md5>.
+// findNewestTypeDB returns the first entry of findReadyTypeDBs.
 func findNewestTypeDB(dbPath string) (path string, ok bool) {
-	entries, err := os.ReadDir(dbPath)
-	if err != nil {
+	paths := findReadyTypeDBs(dbPath)
+	if len(paths) == 0 {
 		return "", false
 	}
+	return paths[0], true
+}
 
+// findReadyTypeDBs returns the ready type DBs in dbPath newest first: numeric
+// builds by descending build number, then legacy types-<md5> by descending
+// modification time.
+func findReadyTypeDBs(dbPath string) []string {
+	entries, err := os.ReadDir(dbPath)
+	if err != nil {
+		return nil
+	}
+
+	type numericDB struct {
+		path  string
+		build int64
+	}
+	type legacyDB struct {
+		path  string
+		mtime time.Time
+	}
 	var (
-		bestBuild   int64 = -1
-		bestNumeric string
-		bestLegacy  string
-		legacyMTime time.Time
+		numeric []numericDB
+		legacy  []legacyDB
 	)
 	for _, entry := range entries {
 		name := entry.Name()
@@ -55,29 +73,26 @@ func findNewestTypeDB(dbPath string) (path string, ok bool) {
 			continue
 		}
 		if build, err := strconv.ParseInt(suffix, 10, 64); err == nil {
-			if build > bestBuild {
-				bestBuild = build
-				bestNumeric = candidate
-			}
+			numeric = append(numeric, numericDB{candidate, build})
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
-		if bestLegacy == "" || info.ModTime().After(legacyMTime) {
-			bestLegacy = candidate
-			legacyMTime = info.ModTime()
-		}
+		legacy = append(legacy, legacyDB{candidate, info.ModTime()})
 	}
 
-	if bestNumeric != "" {
-		return bestNumeric, true
+	slices.SortFunc(numeric, func(a, b numericDB) int { return cmp.Compare(b.build, a.build) })
+	slices.SortFunc(legacy, func(a, b legacyDB) int { return b.mtime.Compare(a.mtime) })
+	paths := make([]string, 0, len(numeric)+len(legacy))
+	for _, db := range numeric {
+		paths = append(paths, db.path)
 	}
-	if bestLegacy != "" {
-		return bestLegacy, true
+	for _, db := range legacy {
+		paths = append(paths, db.path)
 	}
-	return "", false
+	return paths
 }
 
 // removeStaleTypeDBs removes every types-* entry except the three names of

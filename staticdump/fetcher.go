@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	boltdb "github.com/boltdb/bolt"
 	"github.com/evepraisal/go-evepraisal/bolt"
 	"github.com/evepraisal/go-evepraisal/typedb"
 	"github.com/sethgrid/pester"
@@ -66,8 +67,9 @@ func OpenNewestTypeDB(dbPath string) (typedb.TypeDB, error) {
 }
 
 // NewStaticFetcher delivers a type DB to callback and keeps it current. With a
-// ready DB on disk it is delivered at once and the newest build is fetched in
-// the background; on an empty db_path the first build is fetched synchronously.
+// ready DB on disk that opens (the newest such) it is delivered at once and the
+// newest build is fetched in the background; with none, the first build is
+// fetched synchronously.
 // Until a DB is delivered, runs repeat after firstRetryInterval, doubling up
 // to refreshInterval. cleanup=false keeps older type DBs on disk.
 func NewStaticFetcher(client *pester.Client, dbPath string, cleanup bool, callback func(typeDB typedb.TypeDB)) (*StaticFetcher, error) {
@@ -95,14 +97,17 @@ func (f *StaticFetcher) start() *StaticFetcher {
 		log.Printf("ERROR: removing unfinished type DBs: %s", err)
 	}
 
+	// An older build that opens keeps the service serving while the newest
+	// one, if broken, is rebuilt in the background by RunOnce.
 	servedFromDisk := false
-	if path, ok := findNewestTypeDB(f.dbPath); ok {
+	for _, path := range findReadyTypeDBs(f.dbPath) {
 		if err := f.deliver(path); err != nil {
 			log.Printf("ERROR: opening type DB %s: %s", path, err)
-		} else {
-			servedFromDisk = true
-			log.Printf("Serving type DB %s while checking for a newer build", path)
+			continue
 		}
+		servedFromDisk = true
+		log.Printf("Serving type DB %s while checking for a newer build", path)
+		break
 	}
 	if !servedFromDisk {
 		if err := f.RunOnce(); err != nil {
@@ -141,7 +146,7 @@ func (f *StaticFetcher) start() *StaticFetcher {
 }
 
 // RunOnce delivers the latest SDE build to the callback unless it is already
-// current. On any failure the current DB stays in place and the broken
+// current; a DB of that build that fails to open is rebuilt. On any failure the current DB stays in place and the broken
 // archive cache and partial build are removed, so the next run starts clean.
 func (f *StaticFetcher) RunOnce() error {
 	f.runMu.Lock()
@@ -159,14 +164,29 @@ func (f *StaticFetcher) RunOnce() error {
 		return nil
 	}
 
+	built := false
 	if !isReadyTypeDB(typedbPath) {
 		if err := f.buildTypeDB(typedbPath, dump.URL); err != nil {
 			return fmt.Errorf("loading types: %w", err)
 		}
+		built = true
 		log.Println("Done loading types", typedbPath)
 	}
 
-	if err := f.deliver(typedbPath); err != nil {
+	err = f.deliver(typedbPath)
+	// A ready-looking DB that fails to open is rebuilt, else every run would
+	// fail on it forever. ErrTimeout means another process holds it open for
+	// writing: the files are left alone and the next run tries again. The
+	// broken DB is replaced only after a successful build (see buildTypeDB).
+	if err != nil && !built && !errors.Is(err, boltdb.ErrTimeout) {
+		log.Printf("WARNING: rebuilding type DB that fails to open path=%s error=%q", typedbPath, err)
+		if err := f.buildTypeDB(typedbPath, dump.URL); err != nil {
+			return fmt.Errorf("rebuilding types: %w", err)
+		}
+		log.Println("Done loading types", typedbPath)
+		err = f.deliver(typedbPath)
+	}
+	if err != nil {
 		return err
 	}
 
