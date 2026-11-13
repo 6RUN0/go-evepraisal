@@ -29,12 +29,9 @@ var aliases = map[string]string{
 }
 
 // NewTypeDB returns a new TypeDB
-func NewTypeDB(filename string, writable bool) (typedb.TypeDB, error) {
+func NewTypeDB(filename string, writable bool) (_ typedb.TypeDB, err error) {
 	opts := &bolt.Options{Timeout: 1 * time.Second}
-	var (
-		db  *bolt.DB
-		err error
-	)
+	var db *bolt.DB
 	if !writable {
 		opts.ReadOnly = true
 		db, err = bolt.Open(filename, 0600, opts)
@@ -46,7 +43,15 @@ func NewTypeDB(filename string, writable bool) (typedb.TypeDB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("opening database (for writing): %w", err)
 		}
-
+	}
+	// The first type DB build is retried for hours: an open bolt file left
+	// behind by each failed attempt keeps its descriptor, mapping and lock.
+	defer func() {
+		if err != nil {
+			_ = db.Close()
+		}
+	}()
+	if writable {
 		// Init our buckets in case this is a fresh DB
 		err = db.Update(func(tx *bolt.Tx) error {
 			_, err = tx.CreateBucket([]byte("types_by_name"))
