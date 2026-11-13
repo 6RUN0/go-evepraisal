@@ -122,6 +122,9 @@ commit `1aa3024`, for operators moving from upstream. The format follows
 - A type DB whose search index fails to open closes its bolt file; each
   retry of a failed first build left a descriptor, a memory mapping and the
   file lock behind.
+- With `newrelic_license-key` set, the market HTTP client is wrapped for New
+  Relic before the price fetcher starts; the wrapper replaced the transport
+  while the fetcher was already using it, a data race.
 - `/backup-to-file/appraisals` writes a complete gzip file: the stream was
   never closed, so `appraisals.gz` was truncated. It is written to a temporary
   file and renamed only when complete, so a failed run keeps the previous

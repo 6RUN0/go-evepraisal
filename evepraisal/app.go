@@ -80,6 +80,22 @@ func appMain() {
 	httpClient.MaxRetries = 10
 	httpClient.LogHook = func(e pester.ErrEntry) { log.Println(httpClient.FormatError(e)) }
 
+	// The HTTP clients are wrapped before their first consumer starts: the
+	// price fetcher reads httpClient.Transport from its own goroutine.
+	var newRelicApplication *newrelic.Application
+	if viper.GetString("newrelic_license-key") != "" {
+		newRelicApplication, err = newrelic.NewApplication(
+			newrelic.ConfigAppName(viper.GetString("newrelic_app-name")),
+			newrelic.ConfigLicense(viper.GetString("newrelic_license-key")),
+			newrelic.ConfigDebugLogger(os.Stdout),
+			newrelic.ConfigDistributedTracerEnabled(true),
+		)
+		if err != nil {
+			log.Fatalf("Problem configuring new relic: %s", err)
+		}
+		httpClient.Transport = NewRoundTripper(newRelicApplication, httpClient.Transport)
+	}
+
 	fetcherCtx, fetcherCancel := context.WithCancel(context.Background())
 	priceFetcher, err := esi.NewPriceFetcher(fetcherCtx, priceDB, viper.GetString("esi_baseurl"), httpClient, fetchInterval)
 	if err != nil {
@@ -109,26 +125,14 @@ func appMain() {
 	}()
 
 	app := &evepraisal.App{
-		AppraisalDB: appraisalDB,
-		PriceDB:     priceDB,
+		AppraisalDB:         appraisalDB,
+		PriceDB:             priceDB,
+		NewRelicApplication: newRelicApplication,
 	}
 
 	log.Println("Starting type fetcher")
 	staticdumpHTTPClient := newStaticdumpHTTPClient()
-
-	if viper.GetString("newrelic_license-key") != "" {
-		newRelicApplication, err := newrelic.NewApplication(
-			newrelic.ConfigAppName(viper.GetString("newrelic_app-name")),
-			newrelic.ConfigLicense(viper.GetString("newrelic_license-key")),
-			newrelic.ConfigDebugLogger(os.Stdout),
-			newrelic.ConfigDistributedTracerEnabled(true),
-		)
-		if err != nil {
-			log.Fatalf("Problem configuring new relic: %s", err)
-		}
-
-		app.NewRelicApplication = newRelicApplication
-		httpClient.Transport = NewRoundTripper(newRelicApplication, httpClient.Transport)
+	if newRelicApplication != nil {
 		staticdumpHTTPClient.Transport = NewRoundTripper(newRelicApplication, staticdumpHTTPClient.Transport)
 	}
 
