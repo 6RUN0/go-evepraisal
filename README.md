@@ -327,7 +327,8 @@ file). The bolt databases and `backups/appraisals.gz` are created with mode
 (0644 under Docker's default 022); `db_path` is created with mode 0700 when
 the service creates it; the image's own `/data/db`, used without a bind
 mount, has 0755. Everything is owned by UID 65532: on the host, reading it
-needs `sudo`. Each bolt database is opened by one process at a time.
+needs `sudo`. Each bolt database is written by one process at a time;
+`evepraisal restore` opens the type DB read-only next to the service.
 
 | Name | Content | Safe to delete |
 | --- | --- | --- |
@@ -354,9 +355,11 @@ and builds the type DB before the HTTP server listens. The archive is about
 100 MB (a code comment, not measured here); the build takes minutes,
 depending on bandwidth and disk (not measured). The image healthcheck has a
 30-minute start period: until then a failed probe does not mark the container
-unhealthy. It is sized as 2 x 600 seconds of download (below) plus 10 minutes
-for the build, which is not measured; a build still running after 30 minutes
-marks the container unhealthy while it works. A failed build lets the HTTP
+unhealthy. It allows 2 x 600 seconds of download (below) plus 10 minutes for
+the build, which is not measured; the manifest request before the download
+uses the same client and is not counted. A build still running after 30
+minutes marks the container unhealthy while it works, after three failed
+probes 30 seconds apart (Docker defaults), about 31.5 minutes after start. A failed build lets the HTTP
 server start, so the probe passes from then on.
 
 The download has 600 seconds per attempt and two attempts, 2 seconds apart.
@@ -411,9 +414,9 @@ once.
 Each ESI request has a 30-second timeout. A network error or a 5xx answer is
 retried up to 10 attempts with pauses of about 2, 4, 8 ... 512 seconds
 (plus or minus a third). One failing page fails its region after
-2 + 4 + ... + 512 = 1022 seconds of pauses plus up to 10 x 30 seconds of
-timed-out attempts: about 17 to 22 minutes, up to 28 with the largest
-jitter. A 404 counts as an empty page. Any other 4xx except 420 and 429 fails
+2 + 4 + ... + 512 = 1022 seconds of pauses (681 to 1363 with the jitter)
+plus up to 10 x 30 seconds of timed-out attempts: about 11 to 28 minutes,
+typically 17 to 22. A 404 counts as an empty page. Any other 4xx except 420 and 429 fails
 the region at once.
 
 ESI rate limits are honoured inside a cycle, which makes the cycle longer, not
@@ -463,7 +466,7 @@ Exit code 0: all checks passed. 1: the failed check names follow
 On SIGTERM (`docker compose stop`) the service stops the management API,
 the HTTP and the HTTPS server, one after the other, giving in-flight requests
 up to 10 seconds per server. It then waits for a running SDE download to end
-(up to 600 seconds, the download cannot be interrupted) and closes the type
+(up to 600 seconds per attempt, the download cannot be interrupted) and closes the type
 DB, closes the appraisal DB, cancels running ESI requests, and closes the HTTP
 cache and the price DB last. Compose sends SIGKILL after 30 seconds
 (`stop_grace_period`). A kill loses no committed data: bolt writes each

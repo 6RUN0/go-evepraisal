@@ -462,6 +462,7 @@ func makeUnopenableTypeDB(t *testing.T, dir, name string) string {
 
 // captureLog sends the standard logger to a buffer for the rest of the test.
 // Read the buffer only after every goroutine that logs has stopped.
+// Not safe with t.Parallel: the logger and the buffer are shared unsynchronised.
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer

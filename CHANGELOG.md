@@ -42,9 +42,11 @@ commit `1aa3024`, for operators moving from upstream. The format follows
   `/latest`, `/v1` or `/legacy` in `esi_baseurl` is stripped with a warning,
   so existing configs keep working; the default is `https://esi.evetech.net`.
 - ESI rate limits are honoured: a 420 or 429 pauses for `Retry-After` or the
-  error-limit reset (1 minute without a header, at most 5 minutes); one URL
-  is requested at most three times in all. A low error or rate budget pauses
-  before the next request. A busy cycle gets longer instead of being blocked by ESI.
+  error-limit reset (1 minute without a header, at most 5 minutes); the
+  third 420 or 429 answer for one URL fails its region. Each of those
+  requests is itself retried on network errors and 5xx, as described in
+  "Market prices" in `README.md`. A low error or rate budget pauses before
+  the next request. A busy cycle gets longer instead of being blocked by ESI.
 - Region pages are counted from `X-Pages` instead of reading until an empty
   page.
 - One failing region no longer discards the whole cycle: the other regions'
@@ -71,7 +73,8 @@ commit `1aa3024`, for operators moving from upstream. The format follows
 - `evepraisal healthcheck` subcommand, used by the image `HEALTHCHECK` with a
   30-minute start period for the first type DB build on an empty volume:
   2 x 600 seconds of download plus 10 minutes of build time, which is not
-  measured; a longer build is reported unhealthy while it runs. It does not
+  measured, not counting the manifest request; a longer build is reported
+  unhealthy while it runs. It does not
   follow redirects and counts a 3xx as healthy, so it works with
   `http_redirect = true`.
 - `scripts/verify-instance.sh`: checks a deployed site from outside
@@ -108,9 +111,11 @@ commit `1aa3024`, for operators moving from upstream. The format follows
 
 - `scripts/backup.sh`: it called the management API with `curl` from the
   host and used `/usr/local/evepraisal` paths, neither of which exists with
-  this image, and it deleted the previous `appraisals.gz` before the new
-  backup was written, so a failed run left no backup at all. Back up with the
-  service stopped as in "Back up appraisals" in `README.md`.
+  this image. It also removed the previous local `appraisals.gz` with `rm`
+  under `set -e`, which fails when the file is absent, so it stopped before
+  any backup on a first run and after every successful one (`rclone move`
+  removes the file). Back up with the service stopped as in "Back up
+  appraisals" in `README.md`.
 
 ### Fixed
 
